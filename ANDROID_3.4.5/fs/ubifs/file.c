@@ -1318,7 +1318,10 @@ int ubifs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 		 * 'fsync()' for R/O mounted file-systems as per 2.6.39.
 		 */
 		return 0;
-
+	
+	if (c->vfs_sb->s_flags & MS_RDONLY)
+		return 0;
+	
 	err = filemap_write_and_wait_range(inode->i_mapping, start, end);
 	if (err)
 		return err;

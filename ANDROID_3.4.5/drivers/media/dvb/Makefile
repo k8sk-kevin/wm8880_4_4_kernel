@@ -11,11 +11,12 @@ obj-y        := dvb-core/	\
 		bt8xx/		\
 		dvb-usb/	\
 		pluto2/		\
-		siano/		\
 		dm1105/		\
 		pt1/		\
 		mantis/		\
 		ngene/		\
-		ddbridge/
+		ddbridge/ \
+		siano/  \
+		raontech/
 
 obj-$(CONFIG_DVB_FIREDTV)	+= firewire/

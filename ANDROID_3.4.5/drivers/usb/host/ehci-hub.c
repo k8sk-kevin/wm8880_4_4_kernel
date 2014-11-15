@@ -128,6 +128,9 @@ static int __maybe_unused ehci_port_change(struct ehci_hcd *ehci)
 	return 0;
 }
 
+extern char enable_ehci_wake;
+extern char enable_ehci_disc_wakeup; 
+
 static __maybe_unused void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 		bool suspending, bool do_wakeup)
 {
@@ -171,10 +174,13 @@ static __maybe_unused void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 		 * If we are resuming the controller, set the wakeup flags.
 		 */
 		if (!suspending) {
-			if (t1 & PORT_CONNECT)
-				t2 |= PORT_WKOC_E | PORT_WKDISC_E;
-			else
-				t2 |= PORT_WKOC_E | PORT_WKCONN_E;
+			if (enable_ehci_wake && enable_ehci_disc_wakeup) {
+				if (t1 & PORT_CONNECT)
+					t2 |= PORT_WKOC_E | PORT_WKDISC_E;
+				else
+					t2 |= PORT_WKOC_E | PORT_WKCONN_E;
+			} else
+				t2 |= PORT_WKOC_E;
 		}
 		ehci_vdbg(ehci, "port %d, %08x -> %08x\n",
 				port + 1, t1, t2);
@@ -254,7 +260,10 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 		if (t1 & PORT_OWNER)
 			set_bit(port, &ehci->owned_ports);
 		else if ((t1 & PORT_PE) && !(t1 & PORT_SUSPEND)) {
-			t2 |= PORT_SUSPEND;
+			if (enable_ehci_wake)
+				t2 |= PORT_SUSPEND;
+			else
+				t2 &= ~PORT_PE;// CharlesTu, disable port
 			set_bit(port, &ehci->bus_suspended);
 		}
 
@@ -265,10 +274,13 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 			 * condition happens here(connection change during bits
 			 * set), the port change detection will finally fix it.
 			 */
-			if (t1 & PORT_CONNECT)
-				t2 |= PORT_WKOC_E | PORT_WKDISC_E;
-			else
-				t2 |= PORT_WKOC_E | PORT_WKCONN_E;
+			if (enable_ehci_wake && enable_ehci_disc_wakeup) {
+				if (t1 & PORT_CONNECT)
+					t2 |= PORT_WKOC_E | PORT_WKDISC_E;
+				else
+					t2 |= PORT_WKOC_E | PORT_WKCONN_E;
+			} else
+				t2 |= PORT_WKOC_E;
 		}
 
 		if (t1 != t2) {
@@ -602,6 +614,16 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 		 * controller by the user.
 		 */
 
+		/*
+		*CharlesTu,2009.08.17,patch Trancend 8GB usb device ,
+		*copy and fast hot plug reset slowly issue.
+		*Due to Transcend 8GB device ,connect slowly and reset_done clear 0
+		*/
+		/*if (!(temp & PORT_CONNECT))*/
+		if (!(temp & (PORT_CONNECT|PORT_RESET)))
+			ehci->reset_done [i] = 0;
+
+
 		if ((temp & mask) != 0 || test_bit(i, &ehci->port_c_suspend)
 				|| (ehci->reset_done[i] && time_after_eq(
 					jiffies, ehci->reset_done[i]))) {
@@ -610,6 +632,27 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 			else
 			    buf [1] |= 1 << (i - 7);
 			status = STS_PCD;
+		}
+		/*CharlesTu,090415,patch usb card reader plug/unplug fastly 
+		* port fail issue. Due to the port reset assert and not clear.
+		*/
+		if ((temp & PORT_RESET)
+				&& time_after (jiffies, ehci->reset_done [i])) {		
+					/*printk("port reset \n");*/
+					/* force reset to complete */
+					ehci_writel(ehci, temp & ~(PORT_RWC_BITS | PORT_RESET),
+					&ehci->regs->port_status [i]);
+					/* REVISIT:  some hardware needs 550+ usec to clear
+					* this bit; seems too long to spin routinely...
+					*/
+					retval = handshake(ehci,
+					&ehci->regs->port_status [i],
+					PORT_RESET, 0, 750);
+					if (retval != 0) {
+						ehci_err (ehci, "port %d reset error %d\n",
+						i + 1, retval);
+						
+				}
 		}
 	}
 	/* FIXME autosuspend idle root hubs */
@@ -653,6 +696,190 @@ ehci_hub_descriptor (
 }
 
 /*-------------------------------------------------------------------------*/
+/*{CharlesTu,2010.08.26,  for test mode --------------------------------*/
+#ifdef CONFIG_USB_EHCI_EHSET
+
+static int
+single_step_set_feature( struct usb_hcd *hcd, u8 port)
+{
+	struct usb_bus		*bus = hcd_to_bus(hcd);
+	struct usb_device	*udev;
+	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+	struct list_head	qtd_list;
+	struct list_head	setup_list;
+	struct list_head	data_list;
+	struct ehci_qtd		*qtd;
+	struct urb		urb;
+	struct usb_ctrlrequest	setup_packet;
+	char			data_buffer[USB_DT_DEVICE_SIZE];
+
+	ehci_info (ehci, "Testing SINGLE_STEP_SET_FEATURE\n");
+
+	if (bus == NULL) {
+		ehci_err (ehci, "EHSET: usb_bus pointer is NULL\n");
+		return -EPIPE;
+	}
+
+	udev = bus->root_hub;
+	if (udev == NULL) {
+		ehci_err (ehci, "EHSET: root_hub pointer is NULL\n");
+		return -EPIPE;
+	}
+       /* Charles, modify for MVL5 */
+	/*udev = udev->children[port - 1];*/
+	udev = udev->children[port ];
+	   
+	if (udev == NULL) {
+		ehci_err (ehci,  "EHSET: No test device found on port %d\n",
+				port);
+		return -EPIPE;
+	}
+
+	setup_packet.bRequestType = USB_DIR_IN;
+	setup_packet.bRequest = USB_REQ_GET_DESCRIPTOR;
+	setup_packet.wValue = (USB_DT_DEVICE << 8);
+	setup_packet.wIndex = 0;
+	setup_packet.wLength = USB_DT_DEVICE_SIZE;
+
+	INIT_LIST_HEAD (&qtd_list);
+	INIT_LIST_HEAD (&setup_list);
+	INIT_LIST_HEAD (&data_list);
+	
+	urb.transfer_buffer_length = USB_DT_DEVICE_SIZE; 
+	urb.dev = udev;
+	urb.pipe = usb_rcvctrlpipe(udev, 0);
+	/* Charles, modify for MVL5 */
+	urb.hcpriv = udev->ep0.hcpriv; 
+	/*urb.hcpriv = udev->ep0.hcpriv;  */
+	
+	urb.setup_packet = (char *)&setup_packet;
+	urb.transfer_buffer = data_buffer;
+	urb.transfer_flags = URB_HCD_DRIVER_TEST;	
+	//spin_lock_init(&urb.lock);
+	
+	urb.setup_dma = dma_map_single( hcd->self.controller,
+			urb.setup_packet,
+			sizeof (struct usb_ctrlrequest),
+			DMA_TO_DEVICE);
+	urb.transfer_dma = dma_map_single (
+			hcd->self.controller,
+			urb.transfer_buffer,
+			sizeof (struct usb_ctrlrequest),
+			DMA_TO_DEVICE);
+	
+	if (!urb.setup_dma || !urb.transfer_dma) {
+		ehci_err (ehci, "dma_map_single Failed\n");
+		return -EBUSY;
+	}
+
+	if (!qh_urb_transaction (ehci, &urb, &qtd_list, GFP_ATOMIC)) {
+		ehci_err (ehci, "qh_urb_transaction Failed\n");
+		return -EBUSY;
+	}
+
+	qtd =  container_of (qtd_list.next, struct ehci_qtd, qtd_list);
+	list_del_init (&qtd->qtd_list);
+	list_add (&qtd->qtd_list, &setup_list);
+	qtd =  container_of (qtd_list.next, struct ehci_qtd, qtd_list);
+	list_del_init (&qtd->qtd_list);
+	list_add (&qtd->qtd_list, &data_list);
+	qtd =  container_of (qtd_list.next, struct ehci_qtd, qtd_list);
+	list_del_init (&qtd->qtd_list);
+	ehci_qtd_free (ehci, qtd);
+
+	ehci_info (ehci, "Sending SETUP PHASE\n");
+	/* Charles, modify for MVL5 */
+	//if (submit_async (ehci, &udev->ep0, &urb, &setup_list, GFP_ATOMIC)) {
+	 if (submit_async (ehci, &urb, &setup_list, GFP_ATOMIC)) {
+		ehci_err (ehci, "Failed to queue up qtds\n");
+		return -EBUSY;
+	}
+
+	set_current_state(TASK_UNINTERRUPTIBLE);
+	schedule_timeout(msecs_to_jiffies(15000));
+	urb.status = 0;
+	urb.actual_length = 0;
+
+	ehci_info (ehci, "Sending DATA PHASE\n");
+	/* Charles, modify for MVL5 */
+	//if (submit_async (ehci, &udev->ep0, &urb, &data_list, GFP_ATOMIC)) {
+
+	 if (submit_async (ehci, &urb, &setup_list, GFP_ATOMIC)) { 
+	
+		ehci_err (ehci, "Failed to queue up qtds\n");
+		return -EBUSY;
+	}
+
+	return 0;
+}
+static void stop_test(struct ehci_hcd *ehci)
+{
+	volatile unsigned int temp32 = 0;
+	//int ports = 0,i = 0;
+
+	/*reset HC */
+	temp32 = readl(&ehci->regs->command);	
+	ehci_info(ehci, "command before set reset 0x%8.8x\n", temp32);
+	temp32 |= 0x00000002;
+	writel(temp32, &ehci->regs->command);    
+	temp32 = readl (&ehci->regs->command);	
+	ehci_info(ehci, "command after set reset 0x%8.8x\n", temp32);
+	while ((readl(&ehci->regs->command)) & 0x00000002)
+		;   
+
+	/*set CF bit*/		
+	temp32 = readl(&ehci->regs->configured_flag);	
+	ehci_info(ehci, "CF before set CF 0x%8.8x\n", temp32);
+	if (!temp32)
+	writel (FLAG_CF, &ehci->regs->configured_flag);
+	temp32 = readl(&ehci->regs->configured_flag);	
+	while (!((readl(&ehci->regs->configured_flag)) & 0x00000001))
+		;   
+	ehci_info(ehci, "CF after set CF 0x%8.8x\n", temp32);
+
+
+}
+#endif
+/*CharlesTu}-------------------------------------------------------------*/
+
+static int handshake_wmt (struct ehci_hcd *ehci, void __iomem *ptr,
+		      u32 mask, u32 done, int usec)
+{
+	u32	result;
+	u32	result1;
+	int usec_250;
+
+	if (usec > 1000)
+		usec_250 = usec - 261;
+	else
+		usec_250 = usec;
+
+	do {
+		result = ehci_readl(ehci, ptr);
+		result1 = result;
+		if (result == ~(u32)0)		/* card removed */
+			return -ENODEV;
+		result &= mask;
+		if (result == done)
+			return 0;
+		udelay (1);
+		usec--;
+		if (usec == usec_250) {
+			ehci_writel(ehci,
+			result1 & ~(PORT_RWC_BITS | PORT_RESUME | PORT_SUSPEND),
+			ptr);
+//			printk("*2nd clear resume\n");
+		}
+	} while (usec > 0);
+	return -ETIMEDOUT;
+}
+
+extern unsigned int	env_active;
+extern unsigned int	env_port;
+extern unsigned int	env_bitmap;
+extern unsigned int	env_ctraddr;
+extern unsigned int	env_ocaddr;
+extern unsigned int	env_odaddr;	
 
 static int ehci_hub_control (
 	struct usb_hcd	*hcd,
@@ -670,7 +897,8 @@ static int ehci_hub_control (
 	u32		temp, temp1, status;
 	unsigned long	flags;
 	int		retval = 0;
-	unsigned	selector;
+	unsigned	selector=0;
+	u8 port_num = 0;   //CharlesTu, for testmode
 
 	/*
 	 * FIXME:  support SetPortFeatures USB_PORT_FEAT_INDICATOR.
@@ -742,7 +970,8 @@ static int ehci_hub_control (
 				spin_lock_irqsave(&ehci->lock, flags);
 			}
 			/* resume signaling for 20 msec */
-			temp &= ~(PORT_RWC_BITS | PORT_WAKE_BITS);
+			//temp &= ~(PORT_RWC_BITS | PORT_WAKE_BITS);
+			temp &= ~(PORT_RWC_BITS | PORT_WAKE_BITS | PORT_SUSPEND);
 			ehci_writel(ehci, temp | PORT_RESUME, status_reg);
 			ehci->reset_done[wIndex] = jiffies
 					+ msecs_to_jiffies(20);
@@ -839,11 +1068,28 @@ static int ehci_hub_control (
 
 				/* stop resume signaling */
 				temp = ehci_readl(ehci, status_reg);
+//				ehci_writel(ehci,
+//					temp & ~(PORT_RWC_BITS | PORT_RESUME),
+//					status_reg);
+				if ((env_active) && (env_port == wIndex)) {
+					*((volatile unsigned char *)(env_ctraddr)) |= env_bitmap;
+					*((volatile unsigned char *)(env_ocaddr)) |= env_bitmap;				
+					*((volatile unsigned char *)(env_odaddr)) |= env_bitmap;
+				}
 				ehci_writel(ehci,
-					temp & ~(PORT_RWC_BITS | PORT_RESUME),
-					status_reg);
+					temp & ~(PORT_RWC_BITS | PORT_RESUME | PORT_SUSPEND),
+					status_reg);					
 				clear_bit(wIndex, &ehci->resuming_ports);
-				retval = handshake(ehci, status_reg,
+				
+				udelay(1);
+
+				if ((env_active) && (env_port == wIndex)) {				
+					*((volatile unsigned char *)(env_odaddr)) &= (~env_bitmap);
+				}							
+
+//				retval = handshake(ehci, status_reg,
+//					   PORT_RESUME, 0, 2000 /* 2msec */);
+				retval = handshake_wmt(ehci, status_reg,
 					   PORT_RESUME, 0, 2000 /* 2msec */);
 				if (retval != 0) {
 					ehci_err(ehci,
@@ -984,7 +1230,12 @@ static int ehci_hub_control (
 			 * mode if we have hostpc feature
 			 */
 			temp &= ~PORT_WKCONN_E;
-			temp |= PORT_WKDISC_E | PORT_WKOC_E;
+
+			if (enable_ehci_wake && enable_ehci_disc_wakeup) 
+				temp |= PORT_WKDISC_E | PORT_WKOC_E;
+			else
+				temp |= PORT_WKOC_E;
+
 			ehci_writel(ehci, temp | PORT_SUSPEND, status_reg);
 			if (hostpc_reg) {
 				spin_unlock_irqrestore(&ehci->lock, flags);
@@ -1040,12 +1291,13 @@ static int ehci_hub_control (
 		 * or else system reboot).  See EHCI 2.3.9 and 4.14 for info
 		 * about the EHCI-specific stuff.
 		 */
+/*		 
 		case USB_PORT_FEAT_TEST:
 			if (!selector || selector > 5)
 				goto error;
 			ehci_quiesce(ehci);
 
-			/* Put all enabled ports into suspend */
+			// Put all enabled ports into suspend 
 			while (ports--) {
 				u32 __iomem *sreg =
 						&ehci->regs->port_status[ports];
@@ -1060,6 +1312,59 @@ static int ehci_hub_control (
 			temp |= selector << 16;
 			ehci_writel(ehci, temp, status_reg);
 			break;
+*/
+        /*{CharlesTu, 2010.8.26, for test mode */
+		case USB_PORT_FEAT_TEST:
+			ehci_info(ehci, "selector : %x\n ", selector);
+			//selector = (wIndex >> 8) & 0xff;
+			port_num = (wIndex) & 0xff;
+			ehci_info(ehci, "USB_PORT_FEAT_TEST : running test %x "
+			"on port %d\n", selector, port_num);
+			if  (!selector || selector > 5)
+				ehci_info(ehci, "USB_PORT_FEAT_TEST 1: running test %x "
+			"on port %d\n", selector, port_num);
+					
+			switch (selector) {
+				case USB_PORT_TEST_J:
+				case USB_PORT_TEST_K:
+				case USB_PORT_TEST_SE0_NAK:
+				case USB_PORT_TEST_PACKET:
+				case USB_PORT_TEST_FORCE_ENABLE:
+					ehci_quiesce(ehci);
+					ehci_halt(ehci);
+#ifdef CONFIG_USB_EHCI_EHSET
+					stop_test(ehci);
+#endif
+					temp = ehci_readl(ehci, &ehci->regs->command);
+					temp &= 0xfffffffe;
+					writel(temp, &ehci->regs->command);
+					
+					temp = readl(&ehci->regs->port_status [(wIndex & 0x00ff)]);
+					temp &= 0xfff0ffff;
+					writel(temp, &ehci->regs->port_status[port_num]);
+					temp |= selector << 16;
+					writel(temp, &ehci->regs->port_status[port_num]);
+					break;
+#ifdef CONFIG_USB_EHCI_EHSET
+					case USB_PORT_TEST_SINGLE_STEP_SET_FEATURE:
+					spin_unlock_irqrestore (&ehci->lock, flags);
+					if (single_step_set_feature(hcd, port_num)) {
+						spin_lock_irqsave (&ehci->lock, flags);
+						goto error;
+					}
+					spin_lock_irqsave (&ehci->lock, flags);
+					break;
+#endif
+	
+				default:
+					goto error;
+				ehci_quiesce(ehci);
+				ehci_halt(ehci);
+				temp |= selector << 16;
+				writel (temp, &ehci->regs->port_status[port_num - 1]);
+			}
+			 break;
+		 /*CharlesTu} */
 
 		default:
 			goto error;

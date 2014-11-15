@@ -1,8 +1,26 @@
+﻿/*++
+/some descriptions of this software.
+Copyright ©2014 WonderMediaTechnologies, Inc.
+This program is free software: you can redistribute it and/or modify it under 
+the terms of the GNU General Public License as published by the Free 
+Software Foundation, either version 2 of the License, or(at your option) any 
+later version.
+
+This program is distributed in the hope that it will be useful,but WITHOUT 
+ANY WARRANTY; without even the implied warranty of 
+MERCHANTABILITY or FITNESSFOR A PARTICULAR PURPOSE. See 
+the GNU General Public License for more details.You should have received 
+a copy of the GNU General Public License along with this program. If not, 
+see <http://www.gnu.org/licenses/>.
+WonderMediaTechnologies, Inc.
+4F, 533, Chung-Cheng Road, Hsin-Tien, Taipei 231, R.O.C.
+--*/
+
 /*
  * Swap block device support for MTDs
  * Turns an MTD device into a swap device with block wear leveling
  *
- * Copyright © 2007,2011 Nokia Corporation. All rights reserved.
+ * Copyright 漏 2007,2011 Nokia Corporation. All rights reserved.
  *
  * Authors: Jarkko Lavinen <jarkko.lavinen@nokia.com>
  *
@@ -24,10 +42,13 @@
  * 02110-1301 USA
  */
 
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/blktrans.h>
+#include <linux/kthread.h>
+#include <linux/blkdev.h>
 #include <linux/rbtree.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -38,252 +59,215 @@
 #include <linux/seq_file.h>
 #include <linux/device.h>
 #include <linux/math64.h>
+#include <linux/random.h>
+#include <linux/suspend.h>
 
-#define MTDSWAP_PREFIX "mtdswap"
+#define MTDSWAP_VERSION "1.0"
 
-/*
- * The number of free eraseblocks when GC should stop
- */
-#define CLEAN_BLOCK_THRESHOLD	20
+#define MTDSWAP_SECTOR_SIZE      4096
+#define MTDSWAP_SECTOR_SHIFT     12
 
-/*
- * Number of free eraseblocks below which GC can also collect low frag
- * blocks.
- */
-#define LOW_FRAG_GC_TRESHOLD	5
+#define STATUS_FREE              (0xff)
+#define STATUS_USED              (0x55)
 
-/*
- * Wear level cost amortization. We want to do wear leveling on the background
- * without disturbing gc too much. This is made by defining max GC frequency.
- * Frequency value 6 means 1/6 of the GC passes will pick an erase block based
- * on the biggest wear difference rather than the biggest dirtiness.
- *
- * The lower freq2 should be chosen so that it makes sure the maximum erase
- * difference will decrease even if a malicious application is deliberately
- * trying to make erase differences large.
- */
-#define MAX_ERASE_DIFF		4000
-#define COLLECT_NONDIRTY_BASE	MAX_ERASE_DIFF
-#define COLLECT_NONDIRTY_FREQ1	6
-#define COLLECT_NONDIRTY_FREQ2	4
+#define MTDSWAP_IO_RETRIES       3
 
-#define PAGE_UNDEF		UINT_MAX
-#define BLOCK_UNDEF		UINT_MAX
-#define BLOCK_ERROR		(UINT_MAX - 1)
-#define BLOCK_MAX		(UINT_MAX - 2)
-
-#define EBLOCK_BAD		(1 << 0)
-#define EBLOCK_NOMAGIC		(1 << 1)
-#define EBLOCK_BITFLIP		(1 << 2)
-#define EBLOCK_FAILED		(1 << 3)
-#define EBLOCK_READERR		(1 << 4)
-#define EBLOCK_IDX_SHIFT	5
-
-struct swap_eb {
-	struct rb_node rb;
-	struct rb_root *root;
-
-	unsigned int flags;
-	unsigned int active_count;
-	unsigned int erase_count;
-	unsigned int pad;		/* speeds up pointer decrement */
-};
-
-#define MTDSWAP_ECNT_MIN(rbroot) (rb_entry(rb_first(rbroot), struct swap_eb, \
-				rb)->erase_count)
-#define MTDSWAP_ECNT_MAX(rbroot) (rb_entry(rb_last(rbroot), struct swap_eb, \
-				rb)->erase_count)
-
-struct mtdswap_tree {
-	struct rb_root root;
-	unsigned int count;
-};
+int suspend_counts __nosavedata;
+int eba_tbl[1024] __nosavedata;
 
 enum {
-	MTDSWAP_CLEAN,
-	MTDSWAP_USED,
-	MTDSWAP_LOWFRAG,
-	MTDSWAP_HIFRAG,
-	MTDSWAP_DIRTY,
-	MTDSWAP_BITFLIP,
-	MTDSWAP_FAILING,
-	MTDSWAP_TREE_CNT,
-};
-
-struct mtdswap_dev {
-	struct mtd_blktrans_dev *mbd_dev;
-	struct mtd_info *mtd;
-	struct device *dev;
-
-	unsigned int *page_data;
-	unsigned int *revmap;
-
-	unsigned int eblks;
-	unsigned int spare_eblks;
-	unsigned int pages_per_eblk;
-	unsigned int max_erase_count;
-	struct swap_eb *eb_data;
-
-	struct mtdswap_tree trees[MTDSWAP_TREE_CNT];
-
-	unsigned long long sect_read_count;
-	unsigned long long sect_write_count;
-	unsigned long long mtd_write_count;
-	unsigned long long mtd_read_count;
-	unsigned long long discard_count;
-	unsigned long long discard_page_count;
-
-	unsigned int curr_write_pos;
-	struct swap_eb *curr_write;
-
-	char *page_buf;
-	char *oob_buf;
-
-	struct dentry *debugfs_root;
-};
-
-struct mtdswap_oobdata {
-	__le16 magic;
-	__le32 count;
-} __attribute__((packed));
-
-#define MTDSWAP_MAGIC_CLEAN	0x2095
-#define MTDSWAP_MAGIC_DIRTY	(MTDSWAP_MAGIC_CLEAN + 1)
-#define MTDSWAP_TYPE_CLEAN	0
-#define MTDSWAP_TYPE_DIRTY	1
-#define MTDSWAP_OOBSIZE		sizeof(struct mtdswap_oobdata)
-
-#define MTDSWAP_ERASE_RETRIES	3 /* Before marking erase block bad */
-#define MTDSWAP_IO_RETRIES	3
-
-enum {
-	MTDSWAP_SCANNED_CLEAN,
-	MTDSWAP_SCANNED_DIRTY,
-	MTDSWAP_SCANNED_BITFLIP,
+	MTDSWAP_SCANNED_FREE,
+	MTDSWAP_SCANNED_USED,
 	MTDSWAP_SCANNED_BAD,
 };
 
-/*
- * In the worst case mtdswap_writesect() has allocated the last clean
- * page from the current block and is then pre-empted by the GC
- * thread. The thread can consume a full erase block when moving a
- * block.
- */
-#define MIN_SPARE_EBLOCKS	2
-#define MIN_ERASE_BLOCKS	(MIN_SPARE_EBLOCKS + 1)
+struct mtdswap_oobdata {
+	unsigned int magic;
+	unsigned int erase_count;
+	unsigned int lnum;
+	unsigned int seq_number;
+};
 
-#define TREE_ROOT(d, name) (&d->trees[MTDSWAP_ ## name].root)
-#define TREE_EMPTY(d, name) (TREE_ROOT(d, name)->rb_node == NULL)
-#define TREE_NONEMPTY(d, name) (!TREE_EMPTY(d, name))
-#define TREE_COUNT(d, name) (d->trees[MTDSWAP_ ## name].count)
+struct mtdswap_eb {
+
+	union {
+		struct rb_node rb;
+		struct rb_root *root;
+	} u;
+
+	unsigned int erase_count;
+	unsigned int lnum;
+	unsigned int pnum;
+	unsigned int seq_number;
+};
+
+struct mtdswap_dev {
+
+	struct mtd_blktrans_dev *mbd;
+	struct mtd_info *mtd;	/* mtd device */
+	struct device *dev;
+	struct notifier_block pm_notifier;
+
+	struct mtdswap_eb *eb_data;
+	spinlock_t mtdswap_lock;
+	struct rb_root used;
+	struct rb_root free;
+
+	unsigned int pblocks;
+	unsigned int badblock;
+	unsigned int freeblock;
+	unsigned int usedblock;
+
+	unsigned int page_per_block;
+	unsigned int sector_per_block;
+	unsigned int mean_count;
+	unsigned int seq_number;
+
+	struct mutex cache_mutex;
+	unsigned char *cache_data;
+	unsigned long cache_offset;
+	unsigned int cache_size;
+	unsigned char *oob_data;
+	enum { STATE_EMPTY, STATE_CLEAN, STATE_DIRTY } cache_state;
+
+};
 
 #define MTDSWAP_MBD_TO_MTDSWAP(dev) ((struct mtdswap_dev *)dev->priv)
 
-static char partitions[128] = "";
-module_param_string(partitions, partitions, sizeof(partitions), 0444);
-MODULE_PARM_DESC(partitions, "MTD partition numbers to use as swap "
-		"partitions=\"1,3,5\"");
+unsigned char partitions[32] = "16";
 
-static unsigned int spare_eblocks = 10;
-module_param(spare_eblocks, uint, 0444);
-MODULE_PARM_DESC(spare_eblocks, "Percentage of spare erase blocks for "
-		"garbage collection (default 10%)");
+extern char resume_file[64];	/*defined in hibernation.c*/
+static char *parts = NULL;		/* str: mtd part number defined by resume_file */
+static unsigned long part = 0;	/* mtd part number defined by resume_file */
 
-static bool header; /* false */
-module_param(header, bool, 0444);
-MODULE_PARM_DESC(header,
-		"Include builtin swap header (default 0, without header)");
+static DEFINE_MUTEX(mtdswap_lock);
 
-static int mtdswap_gc(struct mtdswap_dev *d, unsigned int background);
+extern void print_nand_buffer(char *value, unsigned int length);
 
-static loff_t mtdswap_eb_offset(struct mtdswap_dev *d, struct swap_eb *eb)
+static void mtdswap_cleanup(struct mtdswap_dev *d);
+static int mtdswap_check_resume(struct mtdswap_dev *d);
+static int swap_tree_add(struct mtdswap_eb *eb, struct rb_root *root);
+static loff_t mtdswap_eb_offset(struct mtdswap_dev *d, struct mtdswap_eb *eb);
+
+void print_mapping_table(struct mtdswap_dev *d)
 {
-	return (loff_t)(eb - d->eb_data) * d->mtd->erasesize;
+	int i;
+	for (i = 0; i < d->pblocks; i++)
+		printk("\n After checking, lnum%d pnum%d", i, eba_tbl[i]);
 }
 
-static void mtdswap_eb_detach(struct mtdswap_dev *d, struct swap_eb *eb)
+static void swaptree_destroy(struct rb_root *root)
 {
-	unsigned int oldidx;
-	struct mtdswap_tree *tp;
+	struct rb_node *rb;
+	struct mtdswap_eb *e;
 
-	if (eb->root) {
-		tp = container_of(eb->root, struct mtdswap_tree, root);
-		oldidx = tp - &d->trees[0];
+	rb = root->rb_node;
+	while (rb) {
+		if (rb->rb_left)
+			rb = rb->rb_left;
+		else if (rb->rb_right)
+			rb = rb->rb_right;
+		else {
+			e = rb_entry(rb, struct mtdswap_eb, u.rb);
 
-		d->trees[oldidx].count--;
-		rb_erase(&eb->rb, eb->root);
+			rb = rb_parent(rb);
+			if (rb) {
+				if (rb->rb_left == &e->u.rb)
+					rb->rb_left = NULL;
+				else
+					rb->rb_right = NULL;
+			}
+			/* kfree(e); */
+		}
 	}
 }
 
-static void __mtdswap_rb_add(struct rb_root *root, struct swap_eb *eb)
+static void mtdswap_cleanup(struct mtdswap_dev *d)
 {
-	struct rb_node **p, *parent = NULL;
-	struct swap_eb *cur;
-
-	p = &root->rb_node;
-	while (*p) {
-		parent = *p;
-		cur = rb_entry(parent, struct swap_eb, rb);
-		if (eb->erase_count > cur->erase_count)
-			p = &(*p)->rb_right;
-		else
-			p = &(*p)->rb_left;
-	}
-
-	rb_link_node(&eb->rb, parent, p);
-	rb_insert_color(&eb->rb, root);
+	swaptree_destroy(&d->used);
+	swaptree_destroy(&d->free);
+	vfree(d->eb_data);
+	vfree(d->cache_data);
+	vfree(d->oob_data);
 }
 
-static void mtdswap_rb_add(struct mtdswap_dev *d, struct swap_eb *eb, int idx)
+static unsigned int get_logic_block(struct mtdswap_dev *d, unsigned int pos)
 {
-	struct rb_root *root;
-
-	if (eb->root == &d->trees[idx].root)
-		return;
-
-	mtdswap_eb_detach(d, eb);
-	root = &d->trees[idx].root;
-	__mtdswap_rb_add(root, eb);
-	eb->root = root;
-	d->trees[idx].count++;
+	return pos / d->mtd->erasesize;
 }
 
-static struct rb_node *mtdswap_rb_index(struct rb_root *root, unsigned int idx)
+static unsigned int get_logic_page(struct mtdswap_dev *d, unsigned int pos)
 {
+	return pos % d->mtd->erasesize;
+}
+
+struct mtdswap_eb *find_mtdswap_eb(struct rb_root *root, int diff)
+{
+
 	struct rb_node *p;
-	unsigned int i;
+	struct mtdswap_eb *e;
 
-	p = rb_first(root);
-	i = 0;
-	while (i < idx && p) {
-		p = rb_next(p);
-		i++;
+	e = rb_entry(rb_first(root), struct mtdswap_eb, u.rb);
+
+	p = root->rb_node;
+
+	while (p) {
+		struct mtdswap_eb *e1;
+
+		e1 = rb_entry(p, struct mtdswap_eb, u.rb);
+		if (e1->erase_count > diff)
+			p = p->rb_left;
+		else {
+			p = p->rb_right;
+			e = e1;
+		}
 	}
-
-	return p;
+	return e;
 }
 
-static int mtdswap_handle_badblock(struct mtdswap_dev *d, struct swap_eb *eb)
+static int find_new_block(struct mtdswap_dev *d, int lnum)
+{
+	/* first we find block from free tree */
+	int key = 0;
+	struct mtdswap_eb *eb;
+
+	d->seq_number++;
+	eb = find_mtdswap_eb(&d->free, key);
+
+	if (eb == NULL) {
+		eb = find_mtdswap_eb(&d->used, key);
+		if (eb == NULL)
+			return -1;
+		rb_erase(&eb->u.rb, &d->used);
+		eb->erase_count++;
+		eb->lnum = lnum;
+		eb->seq_number = d->seq_number;
+
+	} else {
+		rb_erase(&eb->u.rb, &d->free);
+		if (eb->erase_count == 0)
+			eb->erase_count = d->mean_count;
+		eb->lnum = lnum;
+		eb->seq_number = d->seq_number;
+	}
+	eba_tbl[lnum] = eb->pnum;
+	return eb->pnum;
+}
+
+static int mtdswap_handle_badblock(struct mtdswap_dev *d, struct mtdswap_eb *eb)
 {
 	int ret;
 	loff_t offset;
 
-	d->spare_eblks--;
-	eb->flags |= EBLOCK_BAD;
-	mtdswap_eb_detach(d, eb);
-	eb->root = NULL;
-
-	/* badblocks not supported */
 	if (!mtd_can_have_bb(d->mtd))
 		return 1;
 
 	offset = mtdswap_eb_offset(d, eb);
 	dev_warn(d->dev, "Marking bad block at %08llx\n", offset);
 	ret = mtd_block_markbad(d->mtd, offset);
-
 	if (ret) {
 		dev_warn(d->dev, "Mark block bad failed for block at %08llx "
-			"error %d\n", offset, ret);
+			 "error %d\n", offset, ret);
 		return ret;
 	}
 
@@ -291,1252 +275,773 @@ static int mtdswap_handle_badblock(struct mtdswap_dev *d, struct swap_eb *eb)
 
 }
 
-static int mtdswap_handle_write_error(struct mtdswap_dev *d, struct swap_eb *eb)
+static int swap_erase(struct mtdswap_dev *d, struct erase_info *erase)
 {
-	unsigned int marked = eb->flags & EBLOCK_FAILED;
-	struct swap_eb *curr_write = d->curr_write;
+	struct mtd_info *mtd = d->mtd;
+	struct mtdswap_eb *eb;
+	unsigned long pos = erase->addr;
+	int lnum = get_logic_block(d, pos);
+	int page = get_logic_page(d, pos);
+	int pnum, ret = 0, retries = 0;
 
-	eb->flags |= EBLOCK_FAILED;
-	if (curr_write == eb) {
-		d->curr_write = NULL;
-
-		if (!marked && d->curr_write_pos != 0) {
-			mtdswap_rb_add(d, eb, MTDSWAP_FAILING);
-			return 0;
-		}
+	if (eba_tbl[lnum] != -1) {
+		eb = d->eb_data + eba_tbl[lnum];
+		spin_lock(&d->mtdswap_lock);
+		swap_tree_add(eb, &d->used);
+		spin_unlock(&d->mtdswap_lock);
 	}
 
-	return mtdswap_handle_badblock(d, eb);
+RETRY:
+	spin_lock(&d->mtdswap_lock);
+	pnum = find_new_block(d, lnum);
+	/*printk("\n lnum %d -> %d", lnum, pnum); */
+	spin_unlock(&d->mtdswap_lock);
+	if (pnum == -1)
+		return -EIO;
+
+	eb = d->eb_data + pnum;
+	erase->addr = pnum * mtd->erasesize + page;
+
+	ret = mtd_erase(mtd, erase);
+
+	if (ret) {
+		mtdswap_handle_badblock(d, eb);
+		retries++;
+		if (retries > MTDSWAP_IO_RETRIES)
+			return -EIO;
+		goto RETRY;
+	}
+	return 0;
 }
 
-static int mtdswap_read_oob(struct mtdswap_dev *d, loff_t from,
-			struct mtd_oob_ops *ops)
+static int mtdswap_write_marker(struct mtdswap_dev *d, struct mtdswap_eb *eb,
+				loff_t offset, size_t len, unsigned char *buf)
+{
+	struct mtdswap_oobdata *data;
+	struct mtd_info *mtd = d->mtd;
+	int ret;
+	struct mtd_oob_ops ops;
+
+	data = (struct mtdswap_oobdata *)d->oob_data;
+	ops.len = ((len >= mtd->writesize) ? mtd->writesize : len);
+	ops.ooblen = 16;
+	ops.oobbuf = d->oob_data;
+	ops.ooboffs = 0;
+	ops.datbuf = buf;
+	ops.mode = MTD_OPS_AUTO_OOB;
+
+	data->magic = cpu_to_le32(STATUS_USED);
+	data->erase_count = cpu_to_le32(eb->erase_count);
+	data->lnum = cpu_to_le32(eb->lnum);
+	data->seq_number = cpu_to_le32(eb->seq_number);
+
+	ret = mtd_write_oob(mtd, offset, &ops);
+
+	return ret;
+}
+
+static int swap_write(struct mtdswap_dev *d, unsigned long pos, size_t len,
+		      size_t *retlen, unsigned char *buf)
+{
+	struct mtd_info *mtd = d->mtd;
+	int lnum = get_logic_block(d, pos);
+	int page = get_logic_page(d, pos);
+	int pnum = eba_tbl[lnum];
+	unsigned long addr = pnum * mtd->erasesize + page;
+	struct mtdswap_eb *eb = d->eb_data + pnum;
+	int ret;
+
+	*retlen = len;
+	/* First, write datbuf and oobbuf */
+	ret = mtdswap_write_marker(d, eb, addr, len, buf);
+	if (ret) {
+		mtdswap_handle_badblock(d, eb);
+		return ret;
+	}
+	/* Second, just write databuf */
+	len -= mtd->writesize;
+	if (len <= 0)
+		return 0;
+	ret =
+	    mtd_write(mtd, addr + mtd->writesize, len, retlen,
+		      buf + mtd->writesize);
+	/*printk("\nwrite data to %d, %s", pnum, current->comm); */
+	if (ret) {
+		mtdswap_handle_badblock(d, eb);
+		return ret;
+	}
+	*retlen += mtd->writesize;
+
+	return ret;
+}
+
+static int swap_read(struct mtdswap_dev *d, unsigned long pos, size_t len,
+		     size_t *retlen, unsigned char *buf)
+{
+	struct mtd_info *mtd = d->mtd;
+	int lnum = get_logic_block(d, pos);
+	int page = get_logic_page(d, pos);
+	int pnum = eba_tbl[lnum];
+	unsigned long addr = pnum * mtd->erasesize + page;
+	/*
+	   printk("\nread data from pos 0x%lx, lnum %d, pnum%d page%d",
+	   pos, lnum, pnum, page);
+	 */
+	if (pnum == -1) {
+		*retlen = len;
+		return 0;
+	}
+
+	return mtd_read(mtd, addr, len, retlen, buf);
+}
+
+static int swap_read_oob(struct mtdswap_dev *d, loff_t from,
+			 struct mtd_oob_ops *ops)
 {
 	int ret = mtd_read_oob(d->mtd, from, ops);
 
-	if (mtd_is_bitflip(ret))
-		return ret;
-
-	if (ret) {
-		dev_warn(d->dev, "Read OOB failed %d for block at %08llx\n",
-			ret, from);
-		return ret;
-	}
-
-	if (ops->oobretlen < ops->ooblen) {
-		dev_warn(d->dev, "Read OOB return short read (%zd bytes not "
-			"%zd) for block at %08llx\n",
-			ops->oobretlen, ops->ooblen, from);
-		return -EIO;
-	}
-
-	return 0;
-}
-
-static int mtdswap_read_markers(struct mtdswap_dev *d, struct swap_eb *eb)
-{
-	struct mtdswap_oobdata *data, *data2;
-	int ret;
-	loff_t offset;
-	struct mtd_oob_ops ops;
-
-	offset = mtdswap_eb_offset(d, eb);
-
-	/* Check first if the block is bad. */
-	if (mtd_can_have_bb(d->mtd) && mtd_block_isbad(d->mtd, offset))
-		return MTDSWAP_SCANNED_BAD;
-
-	ops.ooblen = 2 * d->mtd->ecclayout->oobavail;
-	ops.oobbuf = d->oob_buf;
-	ops.ooboffs = 0;
-	ops.datbuf = NULL;
-	ops.mode = MTD_OPS_AUTO_OOB;
-
-	ret = mtdswap_read_oob(d, offset, &ops);
-
-	if (ret && !mtd_is_bitflip(ret))
-		return ret;
-
-	data = (struct mtdswap_oobdata *)d->oob_buf;
-	data2 = (struct mtdswap_oobdata *)
-		(d->oob_buf + d->mtd->ecclayout->oobavail);
-
-	if (le16_to_cpu(data->magic) == MTDSWAP_MAGIC_CLEAN) {
-		eb->erase_count = le32_to_cpu(data->count);
-		if (mtd_is_bitflip(ret))
-			ret = MTDSWAP_SCANNED_BITFLIP;
-		else {
-			if (le16_to_cpu(data2->magic) == MTDSWAP_MAGIC_DIRTY)
-				ret = MTDSWAP_SCANNED_DIRTY;
-			else
-				ret = MTDSWAP_SCANNED_CLEAN;
-		}
-	} else {
-		eb->flags |= EBLOCK_NOMAGIC;
-		ret = MTDSWAP_SCANNED_DIRTY;
-	}
-
 	return ret;
 }
 
-static int mtdswap_write_marker(struct mtdswap_dev *d, struct swap_eb *eb,
-				u16 marker)
+static void erase_callback(struct erase_info *done)
 {
-	struct mtdswap_oobdata n;
-	int ret;
-	loff_t offset;
-	struct mtd_oob_ops ops;
-
-	ops.ooboffs = 0;
-	ops.oobbuf = (uint8_t *)&n;
-	ops.mode = MTD_OPS_AUTO_OOB;
-	ops.datbuf = NULL;
-
-	if (marker == MTDSWAP_TYPE_CLEAN) {
-		n.magic = cpu_to_le16(MTDSWAP_MAGIC_CLEAN);
-		n.count = cpu_to_le32(eb->erase_count);
-		ops.ooblen = MTDSWAP_OOBSIZE;
-		offset = mtdswap_eb_offset(d, eb);
-	} else {
-		n.magic = cpu_to_le16(MTDSWAP_MAGIC_DIRTY);
-		ops.ooblen = sizeof(n.magic);
-		offset = mtdswap_eb_offset(d, eb) + d->mtd->writesize;
-	}
-
-	ret = mtd_write_oob(d->mtd, offset, &ops);
-
-	if (ret) {
-		dev_warn(d->dev, "Write OOB failed for block at %08llx "
-			"error %d\n", offset, ret);
-		if (ret == -EIO || mtd_is_eccerr(ret))
-			mtdswap_handle_write_error(d, eb);
-		return ret;
-	}
-
-	if (ops.oobretlen != ops.ooblen) {
-		dev_warn(d->dev, "Short OOB write for block at %08llx: "
-			"%zd not %zd\n",
-			offset, ops.oobretlen, ops.ooblen);
-		return ret;
-	}
-
-	return 0;
-}
-
-/*
- * Are there any erase blocks without MAGIC_CLEAN header, presumably
- * because power was cut off after erase but before header write? We
- * need to guestimate the erase count.
- */
-static void mtdswap_check_counts(struct mtdswap_dev *d)
-{
-	struct rb_root hist_root = RB_ROOT;
-	struct rb_node *medrb;
-	struct swap_eb *eb;
-	unsigned int i, cnt, median;
-
-	cnt = 0;
-	for (i = 0; i < d->eblks; i++) {
-		eb = d->eb_data + i;
-
-		if (eb->flags & (EBLOCK_NOMAGIC | EBLOCK_BAD | EBLOCK_READERR))
-			continue;
-
-		__mtdswap_rb_add(&hist_root, eb);
-		cnt++;
-	}
-
-	if (cnt == 0)
-		return;
-
-	medrb = mtdswap_rb_index(&hist_root, cnt / 2);
-	median = rb_entry(medrb, struct swap_eb, rb)->erase_count;
-
-	d->max_erase_count = MTDSWAP_ECNT_MAX(&hist_root);
-
-	for (i = 0; i < d->eblks; i++) {
-		eb = d->eb_data + i;
-
-		if (eb->flags & (EBLOCK_NOMAGIC | EBLOCK_READERR))
-			eb->erase_count = median;
-
-		if (eb->flags & (EBLOCK_NOMAGIC | EBLOCK_BAD | EBLOCK_READERR))
-			continue;
-
-		rb_erase(&eb->rb, &hist_root);
-	}
-}
-
-static void mtdswap_scan_eblks(struct mtdswap_dev *d)
-{
-	int status;
-	unsigned int i, idx;
-	struct swap_eb *eb;
-
-	for (i = 0; i < d->eblks; i++) {
-		eb = d->eb_data + i;
-
-		status = mtdswap_read_markers(d, eb);
-		if (status < 0)
-			eb->flags |= EBLOCK_READERR;
-		else if (status == MTDSWAP_SCANNED_BAD) {
-			eb->flags |= EBLOCK_BAD;
-			continue;
-		}
-
-		switch (status) {
-		case MTDSWAP_SCANNED_CLEAN:
-			idx = MTDSWAP_CLEAN;
-			break;
-		case MTDSWAP_SCANNED_DIRTY:
-		case MTDSWAP_SCANNED_BITFLIP:
-			idx = MTDSWAP_DIRTY;
-			break;
-		default:
-			idx = MTDSWAP_FAILING;
-		}
-
-		eb->flags |= (idx << EBLOCK_IDX_SHIFT);
-	}
-
-	mtdswap_check_counts(d);
-
-	for (i = 0; i < d->eblks; i++) {
-		eb = d->eb_data + i;
-
-		if (eb->flags & EBLOCK_BAD)
-			continue;
-
-		idx = eb->flags >> EBLOCK_IDX_SHIFT;
-		mtdswap_rb_add(d, eb, idx);
-	}
-}
-
-/*
- * Place eblk into a tree corresponding to its number of active blocks
- * it contains.
- */
-static void mtdswap_store_eb(struct mtdswap_dev *d, struct swap_eb *eb)
-{
-	unsigned int weight = eb->active_count;
-	unsigned int maxweight = d->pages_per_eblk;
-
-	if (eb == d->curr_write)
-		return;
-
-	if (eb->flags & EBLOCK_BITFLIP)
-		mtdswap_rb_add(d, eb, MTDSWAP_BITFLIP);
-	else if (eb->flags & (EBLOCK_READERR | EBLOCK_FAILED))
-		mtdswap_rb_add(d, eb, MTDSWAP_FAILING);
-	if (weight == maxweight)
-		mtdswap_rb_add(d, eb, MTDSWAP_USED);
-	else if (weight == 0)
-		mtdswap_rb_add(d, eb, MTDSWAP_DIRTY);
-	else if (weight > (maxweight/2))
-		mtdswap_rb_add(d, eb, MTDSWAP_LOWFRAG);
-	else
-		mtdswap_rb_add(d, eb, MTDSWAP_HIFRAG);
-}
-
-
-static void mtdswap_erase_callback(struct erase_info *done)
-{
-	wait_queue_head_t *wait_q = (wait_queue_head_t *)done->priv;
+	wait_queue_head_t *wait_q = (wait_queue_head_t *) done->priv;
 	wake_up(wait_q);
 }
 
-static int mtdswap_erase_block(struct mtdswap_dev *d, struct swap_eb *eb)
+static int erase_write(struct mtdswap_dev *d, unsigned long pos,
+		       int len, unsigned char *buf)
 {
-	struct mtd_info *mtd = d->mtd;
 	struct erase_info erase;
-	wait_queue_head_t wq;
-	unsigned int retries = 0;
-	int ret;
-
-	eb->erase_count++;
-	if (eb->erase_count > d->max_erase_count)
-		d->max_erase_count = eb->erase_count;
-
-retry:
-	init_waitqueue_head(&wq);
-	memset(&erase, 0, sizeof(struct erase_info));
-
-	erase.mtd	= mtd;
-	erase.callback	= mtdswap_erase_callback;
-	erase.addr	= mtdswap_eb_offset(d, eb);
-	erase.len	= mtd->erasesize;
-	erase.priv	= (u_long)&wq;
-
-	ret = mtd_erase(mtd, &erase);
-	if (ret) {
-		if (retries++ < MTDSWAP_ERASE_RETRIES) {
-			dev_warn(d->dev,
-				"erase of erase block %#llx on %s failed",
-				erase.addr, mtd->name);
-			yield();
-			goto retry;
-		}
-
-		dev_err(d->dev, "Cannot erase erase block %#llx on %s\n",
-			erase.addr, mtd->name);
-
-		mtdswap_handle_badblock(d, eb);
-		return -EIO;
-	}
-
-	ret = wait_event_interruptible(wq, erase.state == MTD_ERASE_DONE ||
-					   erase.state == MTD_ERASE_FAILED);
-	if (ret) {
-		dev_err(d->dev, "Interrupted erase block %#llx erassure on %s",
-			erase.addr, mtd->name);
-		return -EINTR;
-	}
-
-	if (erase.state == MTD_ERASE_FAILED) {
-		if (retries++ < MTDSWAP_ERASE_RETRIES) {
-			dev_warn(d->dev,
-				"erase of erase block %#llx on %s failed",
-				erase.addr, mtd->name);
-			yield();
-			goto retry;
-		}
-
-		mtdswap_handle_badblock(d, eb);
-		return -EIO;
-	}
-
-	return 0;
-}
-
-static int mtdswap_map_free_block(struct mtdswap_dev *d, unsigned int page,
-				unsigned int *block)
-{
-	int ret;
-	struct swap_eb *old_eb = d->curr_write;
-	struct rb_root *clean_root;
-	struct swap_eb *eb;
-
-	if (old_eb == NULL || d->curr_write_pos >= d->pages_per_eblk) {
-		do {
-			if (TREE_EMPTY(d, CLEAN))
-				return -ENOSPC;
-
-			clean_root = TREE_ROOT(d, CLEAN);
-			eb = rb_entry(rb_first(clean_root), struct swap_eb, rb);
-			rb_erase(&eb->rb, clean_root);
-			eb->root = NULL;
-			TREE_COUNT(d, CLEAN)--;
-
-			ret = mtdswap_write_marker(d, eb, MTDSWAP_TYPE_DIRTY);
-		} while (ret == -EIO || mtd_is_eccerr(ret));
-
-		if (ret)
-			return ret;
-
-		d->curr_write_pos = 0;
-		d->curr_write = eb;
-		if (old_eb)
-			mtdswap_store_eb(d, old_eb);
-	}
-
-	*block = (d->curr_write - d->eb_data) * d->pages_per_eblk +
-		d->curr_write_pos;
-
-	d->curr_write->active_count++;
-	d->revmap[*block] = page;
-	d->curr_write_pos++;
-
-	return 0;
-}
-
-static unsigned int mtdswap_free_page_cnt(struct mtdswap_dev *d)
-{
-	return TREE_COUNT(d, CLEAN) * d->pages_per_eblk +
-		d->pages_per_eblk - d->curr_write_pos;
-}
-
-static unsigned int mtdswap_enough_free_pages(struct mtdswap_dev *d)
-{
-	return mtdswap_free_page_cnt(d) > d->pages_per_eblk;
-}
-
-static int mtdswap_write_block(struct mtdswap_dev *d, char *buf,
-			unsigned int page, unsigned int *bp, int gc_context)
-{
 	struct mtd_info *mtd = d->mtd;
-	struct swap_eb *eb;
+	DECLARE_WAITQUEUE(wait, current);
+	wait_queue_head_t wait_q;
 	size_t retlen;
-	loff_t writepos;
-	int ret;
+	int ret, retries = 0;
+	/*
+	 * First, let's erase the flash block.
+	 */
+#if 0
+	if (pos == 0x0)
+		printk("\n Update Swap Header!");
+#endif
+RETRY:
+	init_waitqueue_head(&wait_q);
+	erase.mtd = mtd;
+	erase.callback = erase_callback;
+	erase.len = len;
+	erase.addr = pos;
+	erase.priv = (u_long) & wait_q;
 
-retry:
-	if (!gc_context)
-		while (!mtdswap_enough_free_pages(d))
-			if (mtdswap_gc(d, 0) > 0)
-				return -ENOSPC;
-
-	ret = mtdswap_map_free_block(d, page, bp);
-	eb = d->eb_data + (*bp / d->pages_per_eblk);
-
-	if (ret == -EIO || mtd_is_eccerr(ret)) {
-		d->curr_write = NULL;
-		eb->active_count--;
-		d->revmap[*bp] = PAGE_UNDEF;
-		goto retry;
-	}
-
-	if (ret < 0)
+	set_current_state(TASK_INTERRUPTIBLE);
+	add_wait_queue(&wait_q, &wait);
+	ret = swap_erase(d, &erase);
+	if (ret) {
+		set_current_state(TASK_RUNNING);
+		remove_wait_queue(&wait_q, &wait);
 		return ret;
-
-	writepos = (loff_t)*bp << PAGE_SHIFT;
-	ret =  mtd_write(mtd, writepos, PAGE_SIZE, &retlen, buf);
-	if (ret == -EIO || mtd_is_eccerr(ret)) {
-		d->curr_write_pos--;
-		eb->active_count--;
-		d->revmap[*bp] = PAGE_UNDEF;
-		mtdswap_handle_write_error(d, eb);
-		goto retry;
 	}
 
-	if (ret < 0) {
-		dev_err(d->dev, "Write to MTD device failed: %d (%zd written)",
-			ret, retlen);
-		goto err;
-	}
+	schedule();		/* Wait for erase to finish. */
+	remove_wait_queue(&wait_q, &wait);
+	/*
+	 * Next, write the data to flash.
+	 */
 
-	if (retlen != PAGE_SIZE) {
-		dev_err(d->dev, "Short write to MTD device: %zd written",
-			retlen);
-		ret = -EIO;
-		goto err;
-	}
-
-	return ret;
-
-err:
-	d->curr_write_pos--;
-	eb->active_count--;
-	d->revmap[*bp] = PAGE_UNDEF;
-
-	return ret;
-}
-
-static int mtdswap_move_block(struct mtdswap_dev *d, unsigned int oldblock,
-		unsigned int *newblock)
-{
-	struct mtd_info *mtd = d->mtd;
-	struct swap_eb *eb, *oldeb;
-	int ret;
-	size_t retlen;
-	unsigned int page, retries;
-	loff_t readpos;
-
-	page = d->revmap[oldblock];
-	readpos = (loff_t) oldblock << PAGE_SHIFT;
-	retries = 0;
-
-retry:
-	ret = mtd_read(mtd, readpos, PAGE_SIZE, &retlen, d->page_buf);
-
-	if (ret < 0 && !mtd_is_bitflip(ret)) {
-		oldeb = d->eb_data + oldblock / d->pages_per_eblk;
-		oldeb->flags |= EBLOCK_READERR;
-
-		dev_err(d->dev, "Read Error: %d (block %u)\n", ret,
-			oldblock);
+	ret = swap_write(d, pos, len, &retlen, buf);
+	if (ret) {
 		retries++;
-		if (retries < MTDSWAP_IO_RETRIES)
-			goto retry;
-
-		goto read_error;
+		if (retries > MTDSWAP_IO_RETRIES)
+			return -EIO;
+		goto RETRY;
 	}
+	if (retlen != len)
+		return -EIO;
+	return 0;
+}
 
-	if (retlen != PAGE_SIZE) {
-		dev_err(d->dev, "Short read: %zd (block %u)\n", retlen,
-		       oldblock);
-		ret = -EIO;
-		goto read_error;
-	}
+static int write_cached_data(struct mtdswap_dev *d)
+{
+	int ret;
+	if (d->cache_state != STATE_DIRTY)
+		return 0;
 
-	ret = mtdswap_write_block(d, d->page_buf, page, newblock, 1);
-	if (ret < 0) {
-		d->page_data[page] = BLOCK_ERROR;
-		dev_err(d->dev, "Write error: %d\n", ret);
+	ret = erase_write(d, d->cache_offset, d->cache_size, d->cache_data);
+	if (ret)
 		return ret;
-	}
-
-	eb = d->eb_data + *newblock / d->pages_per_eblk;
-	d->page_data[page] = *newblock;
-	d->revmap[oldblock] = PAGE_UNDEF;
-	eb = d->eb_data + oldblock / d->pages_per_eblk;
-	eb->active_count--;
-
+	d->cache_state = STATE_EMPTY;
 	return 0;
-
-read_error:
-	d->page_data[page] = BLOCK_ERROR;
-	d->revmap[oldblock] = PAGE_UNDEF;
-	return ret;
 }
 
-static int mtdswap_gc_eblock(struct mtdswap_dev *d, struct swap_eb *eb)
+static int do_cached_write(struct mtdswap_dev *d, unsigned long pos,
+			   unsigned int len, unsigned char *buf)
 {
-	unsigned int i, block, eblk_base, newblock;
-	int ret, errcode;
-
-	errcode = 0;
-	eblk_base = (eb - d->eb_data) * d->pages_per_eblk;
-
-	for (i = 0; i < d->pages_per_eblk; i++) {
-		if (d->spare_eblks < MIN_SPARE_EBLOCKS)
-			return -ENOSPC;
-
-		block = eblk_base + i;
-		if (d->revmap[block] == PAGE_UNDEF)
-			continue;
-
-		ret = mtdswap_move_block(d, block, &newblock);
-		if (ret < 0 && !errcode)
-			errcode = ret;
-	}
-
-	return errcode;
-}
-
-static int __mtdswap_choose_gc_tree(struct mtdswap_dev *d)
-{
-	int idx, stopat;
-
-	if (TREE_COUNT(d, CLEAN) < LOW_FRAG_GC_TRESHOLD)
-		stopat = MTDSWAP_LOWFRAG;
-	else
-		stopat = MTDSWAP_HIFRAG;
-
-	for (idx = MTDSWAP_BITFLIP; idx >= stopat; idx--)
-		if (d->trees[idx].root.rb_node != NULL)
-			return idx;
-
-	return -1;
-}
-
-static int mtdswap_wlfreq(unsigned int maxdiff)
-{
-	unsigned int h, x, y, dist, base;
-
-	/*
-	 * Calculate linear ramp down from f1 to f2 when maxdiff goes from
-	 * MAX_ERASE_DIFF to MAX_ERASE_DIFF + COLLECT_NONDIRTY_BASE.  Similar
-	 * to triangle with height f1 - f1 and width COLLECT_NONDIRTY_BASE.
-	 */
-
-	dist = maxdiff - MAX_ERASE_DIFF;
-	if (dist > COLLECT_NONDIRTY_BASE)
-		dist = COLLECT_NONDIRTY_BASE;
-
-	/*
-	 * Modelling the slop as right angular triangle with base
-	 * COLLECT_NONDIRTY_BASE and height freq1 - freq2. The ratio y/x is
-	 * equal to the ratio h/base.
-	 */
-	h = COLLECT_NONDIRTY_FREQ1 - COLLECT_NONDIRTY_FREQ2;
-	base = COLLECT_NONDIRTY_BASE;
-
-	x = dist - base;
-	y = (x * h + base / 2) / base;
-
-	return COLLECT_NONDIRTY_FREQ2 + y;
-}
-
-static int mtdswap_choose_wl_tree(struct mtdswap_dev *d)
-{
-	static unsigned int pick_cnt;
-	unsigned int i, idx = -1, wear, max;
-	struct rb_root *root;
-
-	max = 0;
-	for (i = 0; i <= MTDSWAP_DIRTY; i++) {
-		root = &d->trees[i].root;
-		if (root->rb_node == NULL)
-			continue;
-
-		wear = d->max_erase_count - MTDSWAP_ECNT_MIN(root);
-		if (wear > max) {
-			max = wear;
-			idx = i;
-		}
-	}
-
-	if (max > MAX_ERASE_DIFF && pick_cnt >= mtdswap_wlfreq(max) - 1) {
-		pick_cnt = 0;
-		return idx;
-	}
-
-	pick_cnt++;
-	return -1;
-}
-
-static int mtdswap_choose_gc_tree(struct mtdswap_dev *d,
-				unsigned int background)
-{
-	int idx;
-
-	if (TREE_NONEMPTY(d, FAILING) &&
-		(background || (TREE_EMPTY(d, CLEAN) && TREE_EMPTY(d, DIRTY))))
-		return MTDSWAP_FAILING;
-
-	idx = mtdswap_choose_wl_tree(d);
-	if (idx >= MTDSWAP_CLEAN)
-		return idx;
-
-	return __mtdswap_choose_gc_tree(d);
-}
-
-static struct swap_eb *mtdswap_pick_gc_eblk(struct mtdswap_dev *d,
-					unsigned int background)
-{
-	struct rb_root *rp = NULL;
-	struct swap_eb *eb = NULL;
-	int idx;
-
-	if (background && TREE_COUNT(d, CLEAN) > CLEAN_BLOCK_THRESHOLD &&
-		TREE_EMPTY(d, DIRTY) && TREE_EMPTY(d, FAILING))
-		return NULL;
-
-	idx = mtdswap_choose_gc_tree(d, background);
-	if (idx < 0)
-		return NULL;
-
-	rp = &d->trees[idx].root;
-	eb = rb_entry(rb_first(rp), struct swap_eb, rb);
-
-	rb_erase(&eb->rb, rp);
-	eb->root = NULL;
-	d->trees[idx].count--;
-	return eb;
-}
-
-static unsigned int mtdswap_test_patt(unsigned int i)
-{
-	return i % 2 ? 0x55555555 : 0xAAAAAAAA;
-}
-
-static unsigned int mtdswap_eblk_passes(struct mtdswap_dev *d,
-					struct swap_eb *eb)
-{
-	struct mtd_info *mtd = d->mtd;
-	unsigned int test, i, j, patt, mtd_pages;
-	loff_t base, pos;
-	unsigned int *p1 = (unsigned int *)d->page_buf;
-	unsigned char *p2 = (unsigned char *)d->oob_buf;
-	struct mtd_oob_ops ops;
+	unsigned int sect_size = d->cache_size;
+	size_t retlen;
 	int ret;
-
-	ops.mode = MTD_OPS_AUTO_OOB;
-	ops.len = mtd->writesize;
-	ops.ooblen = mtd->ecclayout->oobavail;
-	ops.ooboffs = 0;
-	ops.datbuf = d->page_buf;
-	ops.oobbuf = d->oob_buf;
-	base = mtdswap_eb_offset(d, eb);
-	mtd_pages = d->pages_per_eblk * PAGE_SIZE / mtd->writesize;
-
-	for (test = 0; test < 2; test++) {
-		pos = base;
-		for (i = 0; i < mtd_pages; i++) {
-			patt = mtdswap_test_patt(test + i);
-			memset(d->page_buf, patt, mtd->writesize);
-			memset(d->oob_buf, patt, mtd->ecclayout->oobavail);
-			ret = mtd_write_oob(mtd, pos, &ops);
+	/* print_nand_buffer(buf, len); */
+	while (len > 0) {
+		unsigned long sect_start = (pos / sect_size) * sect_size;
+		unsigned int offset = pos - sect_start;
+		unsigned int size = sect_size - offset;
+		if (size > len)
+			size = len;
+		if (size == sect_size) {
+			ret = erase_write(d, pos, size, buf);
 			if (ret)
-				goto error;
+				return ret;
+		} else {
+			if (d->cache_state == STATE_DIRTY &&
+			    d->cache_offset != sect_start) {
+				mutex_lock(&d->cache_mutex);
+				ret = write_cached_data(d);
+				mutex_unlock(&d->cache_mutex);
+				if (ret)
+					return ret;
+			}
 
-			pos += mtd->writesize;
+			if (d->cache_state == STATE_EMPTY ||
+			    d->cache_offset != sect_start) {
+				d->cache_state = STATE_EMPTY;
+				ret = swap_read(d, sect_start, sect_size,
+						&retlen, d->cache_data);
+				if (ret)
+					return ret;
+
+				if (retlen != sect_size)
+					return -EIO;
+
+				d->cache_offset = sect_start;
+				d->cache_state = STATE_CLEAN;
+			}
+			memcpy(d->cache_data + offset, buf, size);
+			d->cache_state = STATE_DIRTY;
 		}
+		buf += size;
+		pos += size;
+		len -= size;
+	}
+	return 0;
+}
 
-		pos = base;
-		for (i = 0; i < mtd_pages; i++) {
-			ret = mtd_read_oob(mtd, pos, &ops);
+static int do_cached_read(struct mtdswap_dev *d, unsigned long pos,
+			  int len, char *buf)
+{
+	unsigned int sect_size = d->cache_size;
+	size_t retlen;
+	int ret;
+	/* printk("\n Read data from pos 0x%lx, len 0x%x", pos, len); */
+	mutex_lock(&d->cache_mutex);
+	while (len > 0) {
+
+		unsigned long sect_start = (pos / sect_size) * sect_size;
+		unsigned int offset = pos - sect_start;
+		unsigned int size = sect_size - offset;
+
+		if (size > len)
+			size = len;
+		if (d->cache_state != STATE_EMPTY &&
+		    d->cache_offset == sect_start) {
+			memcpy(buf, d->cache_data + offset, size);
+		} else {
+			ret = swap_read(d, pos, size, &retlen, buf);
 			if (ret)
-				goto error;
-
-			patt = mtdswap_test_patt(test + i);
-			for (j = 0; j < mtd->writesize/sizeof(int); j++)
-				if (p1[j] != patt)
-					goto error;
-
-			for (j = 0; j < mtd->ecclayout->oobavail; j++)
-				if (p2[j] != (unsigned char)patt)
-					goto error;
-
-			pos += mtd->writesize;
+				return ret;
+			if (retlen != size)
+				return -EIO;
 		}
-
-		ret = mtdswap_erase_block(d, eb);
-		if (ret)
-			goto error;
+		/* print_nand_buffer(buf, len); */
+		buf += size;
+		pos += size;
+		len -= size;
 	}
 
-	eb->flags &= ~EBLOCK_READERR;
-	return 1;
-
-error:
-	mtdswap_handle_badblock(d, eb);
+	mutex_unlock(&d->cache_mutex);
 	return 0;
-}
-
-static int mtdswap_gc(struct mtdswap_dev *d, unsigned int background)
-{
-	struct swap_eb *eb;
-	int ret;
-
-	if (d->spare_eblks < MIN_SPARE_EBLOCKS)
-		return 1;
-
-	eb = mtdswap_pick_gc_eblk(d, background);
-	if (!eb)
-		return 1;
-
-	ret = mtdswap_gc_eblock(d, eb);
-	if (ret == -ENOSPC)
-		return 1;
-
-	if (eb->flags & EBLOCK_FAILED) {
-		mtdswap_handle_badblock(d, eb);
-		return 0;
-	}
-
-	eb->flags &= ~EBLOCK_BITFLIP;
-	ret = mtdswap_erase_block(d, eb);
-	if ((eb->flags & EBLOCK_READERR) &&
-		(ret || !mtdswap_eblk_passes(d, eb)))
-		return 0;
-
-	if (ret == 0)
-		ret = mtdswap_write_marker(d, eb, MTDSWAP_TYPE_CLEAN);
-
-	if (ret == 0)
-		mtdswap_rb_add(d, eb, MTDSWAP_CLEAN);
-	else if (ret != -EIO && !mtd_is_eccerr(ret))
-		mtdswap_rb_add(d, eb, MTDSWAP_DIRTY);
-
-	return 0;
-}
-
-static void mtdswap_background(struct mtd_blktrans_dev *dev)
-{
-	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
-	int ret;
-
-	while (1) {
-		ret = mtdswap_gc(d, 1);
-		if (ret || mtd_blktrans_cease_background(dev))
-			return;
-	}
-}
-
-static void mtdswap_cleanup(struct mtdswap_dev *d)
-{
-	vfree(d->eb_data);
-	vfree(d->revmap);
-	vfree(d->page_data);
-	kfree(d->oob_buf);
-	kfree(d->page_buf);
 }
 
 static int mtdswap_flush(struct mtd_blktrans_dev *dev)
 {
 	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
-
+	mutex_lock(&d->cache_mutex);
+	write_cached_data(d);
+	mutex_unlock(&d->cache_mutex);
 	mtd_sync(d->mtd);
 	return 0;
 }
 
-static unsigned int mtdswap_badblocks(struct mtd_info *mtd, uint64_t size)
+static int mtdswap_readsect(struct mtd_blktrans_dev *dev, unsigned long block,
+			    char *buf)
 {
+	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
+
+	if (likely(dev->mtd->writesize >= MTDSWAP_SECTOR_SIZE))
+		return do_cached_read(d, block << MTDSWAP_SECTOR_SHIFT,
+				      MTDSWAP_SECTOR_SIZE, buf);
+
+	return do_cached_read(d, block << 9, 512, buf);
+}
+
+static int mtdswap_writesect(struct mtd_blktrans_dev *dev, unsigned long block,
+			     char *buf)
+{
+
+	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
+	if (likely(dev->mtd->writesize >= MTDSWAP_SECTOR_SIZE))
+		return do_cached_write(d, block << MTDSWAP_SECTOR_SHIFT,
+				       MTDSWAP_SECTOR_SIZE, buf);
+
+	return do_cached_write(d, block << 9, 512, buf);
+}
+
+static void mtdswap_remove_dev(struct mtd_blktrans_dev *dev)
+{
+	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
+	del_mtd_blktrans_dev(dev);
+	mtdswap_cleanup(d);
+	kfree(d);
+}
+
+static loff_t mtdswap_eb_offset(struct mtdswap_dev *d, struct mtdswap_eb *eb)
+{
+	return (loff_t) (eb - d->eb_data) * d->mtd->erasesize;
+}
+
+static int mtdswap_read_markers(struct mtdswap_dev *d, struct mtdswap_eb *eb)
+{
+	struct mtdswap_oobdata *data;
+	int ret;
 	loff_t offset;
-	unsigned int badcnt;
+	struct mtd_oob_ops ops;
 
-	badcnt = 0;
+	offset = mtdswap_eb_offset(d, eb);
+	if (mtd_can_have_bb(d->mtd) && mtd_block_isbad(d->mtd, offset)) {
+		d->badblock++;
+		return MTDSWAP_SCANNED_BAD;
+	}
 
-	if (mtd_can_have_bb(mtd))
-		for (offset = 0; offset < size; offset += mtd->erasesize)
-			if (mtd_block_isbad(mtd, offset))
-				badcnt++;
+	ops.ooblen = 16;
+	ops.oobbuf = d->oob_data;
+	ops.ooboffs = 0;
+	ops.datbuf = NULL;
+	ops.mode = MTD_OPS_AUTO_OOB;
+	ret = swap_read_oob(d, offset, &ops);
+	data = (struct mtdswap_oobdata *)d->oob_data;
 
-	return badcnt;
+	if (le32_to_cpu(data->magic) == STATUS_USED) {
+		eb->erase_count = le32_to_cpu(data->erase_count);
+		eb->lnum = le32_to_cpu(data->lnum);
+		eb->seq_number = le32_to_cpu(data->seq_number);
+		d->usedblock++;
+		d->mean_count += eb->erase_count;
+
+		if (eb->seq_number > d->seq_number)
+			d->seq_number = eb->seq_number;
+		ret = MTDSWAP_SCANNED_USED;
+	} else {
+		eb->erase_count = 0;
+		d->freeblock++;
+		ret = MTDSWAP_SCANNED_FREE;
+	}
+	eb->pnum = (unsigned int)(eb - d->eb_data);
+	return ret;
+
 }
 
-static int mtdswap_writesect(struct mtd_blktrans_dev *dev,
-			unsigned long page, char *buf)
+static int swap_tree_add(struct mtdswap_eb *eb, struct rb_root *root)
 {
-	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
-	unsigned int newblock, mapped;
-	struct swap_eb *eb;
-	int ret;
+	struct rb_node **p, *parent = NULL;
 
-	d->sect_write_count++;
+	p = &root->rb_node;
+	while (*p) {
+		struct mtdswap_eb *eb1;
+		parent = *p;
+		eb1 = rb_entry(parent, struct mtdswap_eb, u.rb);
 
-	if (d->spare_eblks < MIN_SPARE_EBLOCKS)
-		return -ENOSPC;
+		if (eb->erase_count < eb1->erase_count)
+			p = &(*p)->rb_left;
+		else if (eb->erase_count > eb1->erase_count)
+			p = &(*p)->rb_right;
+		else {
+			if (eb->pnum == eb1->pnum)
+				return 0;
 
-	if (header) {
-		/* Ignore writes to the header page */
-		if (unlikely(page == 0))
+			if (eb->pnum < eb1->pnum)
+				p = &(*p)->rb_left;
+			else
+				p = &(*p)->rb_right;
+		}
+
+	}
+
+	rb_link_node(&eb->u.rb, parent, p);
+	rb_insert_color(&eb->u.rb, root);
+
+	return 0;
+}
+
+static int build_mapping_table(struct mtdswap_dev *d, struct mtdswap_eb *eb)
+{
+
+	int pnum;
+	struct mtdswap_eb *eb1;
+	pnum = eba_tbl[eb->lnum];
+
+	if (pnum >= 0) {
+		eb1 = d->eb_data + pnum;
+		if (eb1->seq_number > eb->seq_number)
 			return 0;
-
-		page--;
 	}
 
-	mapped = d->page_data[page];
-	if (mapped <= BLOCK_MAX) {
-		eb = d->eb_data + (mapped / d->pages_per_eblk);
-		eb->active_count--;
-		mtdswap_store_eb(d, eb);
-		d->page_data[page] = BLOCK_UNDEF;
-		d->revmap[mapped] = PAGE_UNDEF;
-	}
-
-	ret = mtdswap_write_block(d, buf, page, &newblock, 0);
-	d->mtd_write_count++;
-
-	if (ret < 0)
-		return ret;
-
-	eb = d->eb_data + (newblock / d->pages_per_eblk);
-	d->page_data[page] = newblock;
-
+	eba_tbl[eb->lnum] = eb->pnum;
 	return 0;
 }
 
-/* Provide a dummy swap header for the kernel */
-static int mtdswap_auto_header(struct mtdswap_dev *d, char *buf)
+static int mtdswap_check_counts(struct mtdswap_dev *d)
 {
-	union swap_header *hd = (union swap_header *)(buf);
-
-	memset(buf, 0, PAGE_SIZE - 10);
-
-	hd->info.version = 1;
-	hd->info.last_page = d->mbd_dev->size - 1;
-	hd->info.nr_badpages = 0;
-
-	memcpy(buf + PAGE_SIZE - 10, "SWAPSPACE2", 10);
-
-	return 0;
+	return (d->pblocks - d->usedblock - d->freeblock - d->badblock) ? 1 : 0;
 }
 
-static int mtdswap_readsect(struct mtd_blktrans_dev *dev,
-			unsigned long page, char *buf)
+static int mtdswap_scan_eblks(struct mtdswap_dev *d, unsigned int need_build)
 {
-	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
-	struct mtd_info *mtd = d->mtd;
-	unsigned int realblock, retries;
-	loff_t readpos;
-	struct swap_eb *eb;
-	size_t retlen;
-	int ret;
+	int status, i;
+	struct mtdswap_eb *eb;
 
-	d->sect_read_count++;
-
-	if (header) {
-		if (unlikely(page == 0))
-			return mtdswap_auto_header(d, buf);
-
-		page--;
-	}
-
-	realblock = d->page_data[page];
-	if (realblock > BLOCK_MAX) {
-		memset(buf, 0x0, PAGE_SIZE);
-		if (realblock == BLOCK_UNDEF)
-			return 0;
-		else
-			return -EIO;
-	}
-
-	eb = d->eb_data + (realblock / d->pages_per_eblk);
-	BUG_ON(d->revmap[realblock] == PAGE_UNDEF);
-
-	readpos = (loff_t)realblock << PAGE_SHIFT;
-	retries = 0;
-
-retry:
-	ret = mtd_read(mtd, readpos, PAGE_SIZE, &retlen, buf);
-
-	d->mtd_read_count++;
-	if (mtd_is_bitflip(ret)) {
-		eb->flags |= EBLOCK_BITFLIP;
-		mtdswap_rb_add(d, eb, MTDSWAP_BITFLIP);
-		ret = 0;
-	}
-
-	if (ret < 0) {
-		dev_err(d->dev, "Read error %d\n", ret);
-		eb->flags |= EBLOCK_READERR;
-		mtdswap_rb_add(d, eb, MTDSWAP_FAILING);
-		retries++;
-		if (retries < MTDSWAP_IO_RETRIES)
-			goto retry;
-
-		return ret;
-	}
-
-	if (retlen != PAGE_SIZE) {
-		dev_err(d->dev, "Short read %zd\n", retlen);
-		return -EIO;
-	}
-
-	return 0;
-}
-
-static int mtdswap_discard(struct mtd_blktrans_dev *dev, unsigned long first,
-			unsigned nr_pages)
-{
-	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
-	unsigned long page;
-	struct swap_eb *eb;
-	unsigned int mapped;
-
-	d->discard_count++;
-
-	for (page = first; page < first + nr_pages; page++) {
-		mapped = d->page_data[page];
-		if (mapped <= BLOCK_MAX) {
-			eb = d->eb_data + (mapped / d->pages_per_eblk);
-			eb->active_count--;
-			mtdswap_store_eb(d, eb);
-			d->page_data[page] = BLOCK_UNDEF;
-			d->revmap[mapped] = PAGE_UNDEF;
-			d->discard_page_count++;
-		} else if (mapped == BLOCK_ERROR) {
-			d->page_data[page] = BLOCK_UNDEF;
-			d->discard_page_count++;
+	for (i = 0; i < d->pblocks; i++) {
+		eb = d->eb_data + i;
+		eb->pnum = i;
+		status = mtdswap_read_markers(d, eb);
+		if (status == MTDSWAP_SCANNED_BAD)
+			continue;
+		switch (status) {
+		case MTDSWAP_SCANNED_FREE:
+			spin_lock(&d->mtdswap_lock);
+			swap_tree_add(eb, &d->free);
+			spin_unlock(&d->mtdswap_lock);
+			break;
+		case MTDSWAP_SCANNED_USED:
+			spin_lock(&d->mtdswap_lock);
+			swap_tree_add(eb, &d->used);
+			spin_unlock(&d->mtdswap_lock);
+			if(need_build)
+				build_mapping_table(d, eb);
+			break;
 		}
 	}
 
-	return 0;
-}
-
-static int mtdswap_show(struct seq_file *s, void *data)
-{
-	struct mtdswap_dev *d = (struct mtdswap_dev *) s->private;
-	unsigned long sum;
-	unsigned int count[MTDSWAP_TREE_CNT];
-	unsigned int min[MTDSWAP_TREE_CNT];
-	unsigned int max[MTDSWAP_TREE_CNT];
-	unsigned int i, cw = 0, cwp = 0, cwecount = 0, bb_cnt, mapped, pages;
-	uint64_t use_size;
-	char *name[] = {"clean", "used", "low", "high", "dirty", "bitflip",
-			"failing"};
-
-	mutex_lock(&d->mbd_dev->lock);
-
-	for (i = 0; i < MTDSWAP_TREE_CNT; i++) {
-		struct rb_root *root = &d->trees[i].root;
-
-		if (root->rb_node) {
-			count[i] = d->trees[i].count;
-			min[i] = rb_entry(rb_first(root), struct swap_eb,
-					rb)->erase_count;
-			max[i] = rb_entry(rb_last(root), struct swap_eb,
-					rb)->erase_count;
-		} else
-			count[i] = 0;
-	}
-
-	if (d->curr_write) {
-		cw = 1;
-		cwp = d->curr_write_pos;
-		cwecount = d->curr_write->erase_count;
-	}
-
-	sum = 0;
-	for (i = 0; i < d->eblks; i++)
-		sum += d->eb_data[i].erase_count;
-
-	use_size = (uint64_t)d->eblks * d->mtd->erasesize;
-	bb_cnt = mtdswap_badblocks(d->mtd, use_size);
-
-	mapped = 0;
-	pages = d->mbd_dev->size;
-	for (i = 0; i < pages; i++)
-		if (d->page_data[i] != BLOCK_UNDEF)
-			mapped++;
-
-	mutex_unlock(&d->mbd_dev->lock);
-
-	for (i = 0; i < MTDSWAP_TREE_CNT; i++) {
-		if (!count[i])
-			continue;
-
-		if (min[i] != max[i])
-			seq_printf(s, "%s:\t%5d erase blocks, erased min %d, "
-				"max %d times\n",
-				name[i], count[i], min[i], max[i]);
-		else
-			seq_printf(s, "%s:\t%5d erase blocks, all erased %d "
-				"times\n", name[i], count[i], min[i]);
-	}
-
-	if (bb_cnt)
-		seq_printf(s, "bad:\t%5u erase blocks\n", bb_cnt);
-
-	if (cw)
-		seq_printf(s, "current erase block: %u pages used, %u free, "
-			"erased %u times\n",
-			cwp, d->pages_per_eblk - cwp, cwecount);
-
-	seq_printf(s, "total erasures: %lu\n", sum);
-
-	seq_printf(s, "\n");
-
-	seq_printf(s, "mtdswap_readsect count: %llu\n", d->sect_read_count);
-	seq_printf(s, "mtdswap_writesect count: %llu\n", d->sect_write_count);
-	seq_printf(s, "mtdswap_discard count: %llu\n", d->discard_count);
-	seq_printf(s, "mtd read count: %llu\n", d->mtd_read_count);
-	seq_printf(s, "mtd write count: %llu\n", d->mtd_write_count);
-	seq_printf(s, "discarded pages count: %llu\n", d->discard_page_count);
-
-	seq_printf(s, "\n");
-	seq_printf(s, "total pages: %u\n", pages);
-	seq_printf(s, "pages mapped: %u\n", mapped);
+	if (mtdswap_check_counts(d))
+		printk(KERN_CRIT "\n NOTICE: MTDSWAP counts are illegal");
 
 	return 0;
 }
 
-static int mtdswap_open(struct inode *inode, struct file *file)
+#if 0
+static void test_swap(struct mtdswap_dev *d)
 {
-	return single_open(file, mtdswap_show, inode->i_private);
+	unsigned long start_sector = 0x0;
+	unsigned long sector_count = 0;
+	unsigned long rand_seed = 544;
+	unsigned char write_data = 0;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < 10000; i++) {
+		/* seed the randome: no seed to freeze the test case */
+		srandom32(random32() + i + rand_seed);
+
+/*      start_sector = (unsigned long)(random32()%(d->sector_per_block * 64)) & (~(32-1));
+		rand_seed = (unsigned long)(random32()%(d->sector_per_block * 64-start_sector));
+*/
+		write_data = (unsigned char)(random32() % ((unsigned char)-1));
+		sector_count = 1;
+
+		/* set data */
+		memset(sector_buffer, (unsigned char)write_data, 2097152);
+
+		/* write */
+/*      ret = ONFM_Write(c, start_sector, sector_count, sector_buffer); */
+		ret = do_cached_write(d, start_sector, 2097152, sector_buffer);
+/*      ret = erase_write(d, start_sector, 512, sector_buffer); */
+		if (ret == 0) {
+			/* read and check */
+			ret =
+			    do_cached_read(d, start_sector, 2097152,
+					   read_sector_buffer);
+			if (ret == 0) {
+				ret =
+				    memcmp(sector_buffer, read_sector_buffer,
+					   2097152);
+			}
+		}
+
+		/* print */
+		if (ret != 0) {
+			printk
+			    ("\n%d:*FAIL* start address: %d, sector count: %d, data: %d",
+			     i, start_sector, sector_count, write_data);
+			break;
+		} else {
+			printk
+			    ("\n%d-PASS. start address: %d, sector count: %d, data: %d.",
+			     i, start_sector, sector_count, write_data);
+			start_sector += 0x200;
+		}
+	}
 }
+#endif
 
-static const struct file_operations mtdswap_fops = {
-	.open		= mtdswap_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int mtdswap_add_debugfs(struct mtdswap_dev *d)
+static int mtdswap_check_resume(struct mtdswap_dev *d)
 {
-	struct gendisk *gd = d->mbd_dev->disk;
-	struct device *dev = disk_to_dev(gd);
+	struct mtd_info *mtd = d->mtd;
+	struct mtdswap_eb *eb;
 
-	struct dentry *root;
-	struct dentry *dent;
+	spin_lock(&d->mtdswap_lock);
+	swaptree_destroy(&d->used);
+	swaptree_destroy(&d->free);
+	spin_unlock(&d->mtdswap_lock);
+	d->mean_count = 1;
+	d->used = d->free = RB_ROOT;
+	d->badblock = d->freeblock = d->usedblock = 0;
+	memset(d->eb_data, 0x00, sizeof(struct mtdswap_eb) * d->pblocks);
 
-	root = debugfs_create_dir(gd->disk_name, NULL);
-	if (IS_ERR(root))
-		return 0;
+	mutex_lock(&d->cache_mutex);
+	d->cache_size = mtd->erasesize;
+	d->cache_state = STATE_EMPTY;
+	d->cache_offset = -1;
+	memset(d->cache_data, 0xFF, mtd->erasesize);
+	mutex_unlock(&d->cache_mutex);
 
-	if (!root) {
-		dev_err(dev, "failed to initialize debugfs\n");
-		return -1;
+	memset(d->oob_data, 0xFF, mtd->oobsize);
+	mtdswap_scan_eblks(d, 0);
+	eb = d->eb_data + eba_tbl[0];
+	spin_lock(&d->mtdswap_lock);
+	rb_erase(&eb->u.rb, &d->used);
+	spin_unlock(&d->mtdswap_lock);
+#if 0
+	for (i = 0; i < d->pblocks; i++) {
+		if (eba_tbl[i] != -1) {
+			eb = d->eb_data + eba_tbl[i];
+			printk("\n Remove %d from used tree", eb->pnum);
+			rb_erase(&eb->u.rb, &d->used);
+		}
 	}
-
-	d->debugfs_root = root;
-
-	dent = debugfs_create_file("stats", S_IRUSR, root, d,
-				&mtdswap_fops);
-	if (!dent) {
-		dev_err(d->dev, "debugfs_create_file failed\n");
-		debugfs_remove_recursive(root);
-		d->debugfs_root = NULL;
-		return -1;
-	}
-
+#endif
+	if (d->usedblock)
+		d->mean_count = d->mean_count / d->usedblock;
 	return 0;
 }
 
-static int mtdswap_init(struct mtdswap_dev *d, unsigned int eblocks,
-			unsigned int spare_cnt)
+static int mtdswap_check_suspend(struct mtdswap_dev *d)
 {
-	struct mtd_info *mtd = d->mbd_dev->mtd;
-	unsigned int i, eblk_bytes, pages, blocks;
-	int ret = -ENOMEM;
+	struct mtd_info *mtd = d->mtd;
+	struct mtdswap_eb *eb;
+	int i;
+
+	spin_lock(&d->mtdswap_lock);
+	swaptree_destroy(&d->used);
+	swaptree_destroy(&d->free);
+	spin_unlock(&d->mtdswap_lock);
+
+	d->mean_count = 1;
+	d->used = d->free = RB_ROOT;
+	d->badblock = d->freeblock = d->usedblock = 0;
+	memset(d->eb_data, 0x00, sizeof(struct mtdswap_eb) * d->pblocks);
+	mutex_lock(&d->cache_mutex);
+	d->cache_size = mtd->erasesize;
+	d->cache_state = STATE_EMPTY;
+	d->cache_offset = -1;
+	memset(d->cache_data, 0xFF, mtd->erasesize);
+	mutex_unlock(&d->cache_mutex);
+	memset(d->oob_data, 0xFF, mtd->oobsize);
+
+	if(!suspend_counts) {
+	for (i = 1; i < d->pblocks; i++)
+		eba_tbl[i] = -1;
+	}
+	mtdswap_scan_eblks(d, 0);
+	eb = d->eb_data + eba_tbl[0];
+	spin_lock(&d->mtdswap_lock);
+	rb_erase(&eb->u.rb, &d->used);
+	spin_unlock(&d->mtdswap_lock);
+	suspend_counts = 1;
+#if 0
+	for (i = 0; i < d->pblocks; i++) {
+		if (eba_tbl[i] != -1) {
+			eb = d->eb_data + eba_tbl[i];
+			rb_erase(&eb->u.rb, &d->used);
+		}
+	}
+#endif
+	if (d->usedblock)
+		d->mean_count = d->mean_count / d->usedblock;
+	return 0;
+}
+
+static int mtdswap_resume(struct mtdswap_dev *d)
+{
+	mtdswap_check_resume(d);
+	return 0;
+}
+
+static int mtdswap_suspend(struct mtdswap_dev *d)
+{
+	mtdswap_check_suspend(d);
+	return 0;
+}
+
+static int swap_power_event(struct notifier_block *this,
+			    unsigned long event, void *ptr)
+{
+	struct mtdswap_dev *d =
+	    container_of(this, struct mtdswap_dev, pm_notifier);
+	switch (event) {
+	case PM_POST_RESTORE:	/* in case hibernation restore fail */
+	case PM_POST_HIBERNATION:	/* normal case for hibernation finished */
+		mtdswap_resume(d);
+		break;
+	case PM_HIBERNATION_PREPARE:
+		mtdswap_suspend(d);
+		break;
+	case PM_HIBERNATION_FINISH:
+		mutex_lock(&d->cache_mutex);
+		write_cached_data(d);
+		mutex_unlock(&d->cache_mutex);
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_DONE;
+}
+
+static int mtdswap_init(struct mtdswap_dev *d, unsigned int eblocks)
+{
+	struct mtd_info *mtd = d->mbd->mtd;
+	struct mtdswap_eb *eb;
+	int i;
 
 	d->mtd = mtd;
-	d->eblks = eblocks;
-	d->spare_eblks = spare_cnt;
-	d->pages_per_eblk = mtd->erasesize >> PAGE_SHIFT;
+	d->pblocks = eblocks;
+	d->pm_notifier.notifier_call = swap_power_event;
+	register_pm_notifier(&d->pm_notifier);
 
-	pages = d->mbd_dev->size;
-	blocks = eblocks * d->pages_per_eblk;
+	d->page_per_block = mtd->erasesize / mtd->writesize;
+	d->sector_per_block = mtd->erasesize >> MTDSWAP_SECTOR_SHIFT;
+	d->mean_count = 1;
+	d->used = d->free = RB_ROOT;
+	spin_lock_init(&d->mtdswap_lock);
+	mutex_init(&d->cache_mutex);
 
-	for (i = 0; i < MTDSWAP_TREE_CNT; i++)
-		d->trees[i].root = RB_ROOT;
+	d->badblock = d->freeblock = d->usedblock = 0;
 
-	d->page_data = vmalloc(sizeof(int)*pages);
-	if (!d->page_data)
-		goto page_data_fail;
+	d->cache_data = vmalloc(mtd->erasesize);
+	d->cache_size = mtd->erasesize;
+	d->cache_state = STATE_EMPTY;
+	d->cache_offset = -1;
+	d->oob_data = vmalloc(mtd->oobsize);
+	d->eb_data = vmalloc(sizeof(struct mtdswap_eb) * d->pblocks);
 
-	d->revmap = vmalloc(sizeof(int)*blocks);
-	if (!d->revmap)
-		goto revmap_fail;
+	memset(d->eb_data, 0x00, sizeof(struct mtdswap_eb) * d->pblocks);
+	memset(d->cache_data, 0xFF, mtd->erasesize);
+	memset(d->oob_data, 0xFF, mtd->oobsize);
 
-	eblk_bytes = sizeof(struct swap_eb)*d->eblks;
-	d->eb_data = vzalloc(eblk_bytes);
-	if (!d->eb_data)
-		goto eb_data_fail;
+	for (i = 0; i < d->pblocks; i++)
+		eba_tbl[i] = -1;
 
-	for (i = 0; i < pages; i++)
-		d->page_data[i] = BLOCK_UNDEF;
+	mtdswap_scan_eblks(d, 1);
 
-	for (i = 0; i < blocks; i++)
-		d->revmap[i] = PAGE_UNDEF;
-
-	d->page_buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!d->page_buf)
-		goto page_buf_fail;
-
-	d->oob_buf = kmalloc(2 * mtd->ecclayout->oobavail, GFP_KERNEL);
-	if (!d->oob_buf)
-		goto oob_buf_fail;
-
-	mtdswap_scan_eblks(d);
+	for (i = 0; i < d->pblocks; i++) {
+		if (eba_tbl[i] != -1) {
+			eb = d->eb_data + eba_tbl[i];
+			rb_erase(&eb->u.rb, &d->used);
+		}
+	}
+#if 0
+	for (i = 0; i < d->pblocks; i++)
+		printk("\n lnum%d pnum%d", i, eba_tbl[i]);
+#endif
+	if (d->usedblock)
+		d->mean_count = d->mean_count / d->usedblock;
+	/* test_swap(d); */
 
 	return 0;
-
-oob_buf_fail:
-	kfree(d->page_buf);
-page_buf_fail:
-	vfree(d->eb_data);
-eb_data_fail:
-	vfree(d->revmap);
-revmap_fail:
-	vfree(d->page_data);
-page_data_fail:
-	printk(KERN_ERR "%s: init failed (%d)\n", MTDSWAP_PREFIX, ret);
-	return ret;
 }
+
+static int mtdswap_find_mtd(unsigned char *target, unsigned char *source)
+{
+	/*extract partition number from string */
+	unsigned char *temp;
+	unsigned int slen = strlen(source);
+	unsigned int tlen=0;
+
+	temp = strstr(target, source);
+
+	if (temp) {
+		tlen = strlen(temp);
+		strncpy(partitions, temp + slen, tlen-slen+1);
+		/*find mtd = true*/
+		return 1;	
+	}
+
+	/*find mtd = false*/
+	return 0;	
+}
+
 
 static void mtdswap_add_mtd(struct mtd_blktrans_ops *tr, struct mtd_info *mtd)
 {
 	struct mtdswap_dev *d;
 	struct mtd_blktrans_dev *mbd_dev;
-	char *parts;
-	char *this_opt;
-	unsigned long part;
-	unsigned int eblocks, eavailable, bad_blocks, spare_cnt;
-	uint64_t swap_size, use_size, size_limit;
-	struct nand_ecclayout *oinfo;
-	int ret;
+	struct nand_ecclayout *info;
+	unsigned long use_size;
+	int eblocks;
 
-	parts = &partitions[0];
-	if (!*parts)
+	if (memcmp(mtd->name, "swap", sizeof("swap"))!=0)
 		return;
-
-	while ((this_opt = strsep(&parts, ",")) != NULL) {
-		if (strict_strtoul(this_opt, 0, &part) < 0)
-			return;
-
-		if (mtd->index == part)
-			break;
+	if (mtd->index != part){
+		printk(KERN_WARNING"\n Find swap partition mtdswap%d != mtdswap%lu\n", mtd->index, part);
+		/*replace original resume_file with what we actaully find.*/
+		memset(resume_file, 0, sizeof(resume_file));
+		strncat(resume_file, "/dev/mtdswap", sizeof("/dev/mtdswap"));
+		snprintf(partitions, sizeof(partitions), "%d", mtd->index);
+		strncat(resume_file, partitions, sizeof(partitions));
+		printk(KERN_WARNING"Replace resume_file As : %s\n", resume_file);
 	}
 
-	if (mtd->index != part)
-		return;
+	printk(KERN_INFO "Enabling MTD swap on device %d, size %lldMB, ",
+	       mtd->index, mtd->size / 1024 / 1024);
 
-	if (mtd->erasesize < PAGE_SIZE || mtd->erasesize % PAGE_SIZE) {
-		printk(KERN_ERR "%s: Erase size %u not multiple of PAGE_SIZE "
-			"%lu\n", MTDSWAP_PREFIX, mtd->erasesize, PAGE_SIZE);
-		return;
-	}
-
-	if (PAGE_SIZE % mtd->writesize || mtd->writesize > PAGE_SIZE) {
-		printk(KERN_ERR "%s: PAGE_SIZE %lu not multiple of write size"
-			" %u\n", MTDSWAP_PREFIX, PAGE_SIZE, mtd->writesize);
-		return;
-	}
-
-	oinfo = mtd->ecclayout;
-	if (!oinfo) {
-		printk(KERN_ERR "%s: mtd%d does not have OOB\n",
-			MTDSWAP_PREFIX, mtd->index);
-		return;
-	}
-
-	if (!mtd->oobsize || oinfo->oobavail < MTDSWAP_OOBSIZE) {
-		printk(KERN_ERR "%s: Not enough free bytes in OOB, "
-			"%d available, %zu needed.\n",
-			MTDSWAP_PREFIX, oinfo->oobavail, MTDSWAP_OOBSIZE);
-		return;
-	}
-
-	if (spare_eblocks > 100)
-		spare_eblocks = 100;
+	info = mtd->ecclayout;
 
 	use_size = mtd->size;
-	size_limit = (uint64_t) BLOCK_MAX * PAGE_SIZE;
-
-	if (mtd->size > size_limit) {
-		printk(KERN_WARNING "%s: Device too large. Limiting size to "
-			"%llu bytes\n", MTDSWAP_PREFIX, size_limit);
-		use_size = size_limit;
-	}
-
 	eblocks = mtd_div_by_eb(use_size, mtd);
-	use_size = eblocks * mtd->erasesize;
-	bad_blocks = mtdswap_badblocks(mtd, use_size);
-	eavailable = eblocks - bad_blocks;
-
-	if (eavailable < MIN_ERASE_BLOCKS) {
-		printk(KERN_ERR "%s: Not enough erase blocks. %u available, "
-			"%d needed\n", MTDSWAP_PREFIX, eavailable,
-			MIN_ERASE_BLOCKS);
-		return;
-	}
-
-	spare_cnt = div_u64((uint64_t)eavailable * spare_eblocks, 100);
-
-	if (spare_cnt < MIN_SPARE_EBLOCKS)
-		spare_cnt = MIN_SPARE_EBLOCKS;
-
-	if (spare_cnt > eavailable - 1)
-		spare_cnt = eavailable - 1;
-
-	swap_size = (uint64_t)(eavailable - spare_cnt) * mtd->erasesize +
-		(header ? PAGE_SIZE : 0);
-
-	printk(KERN_INFO "%s: Enabling MTD swap on device %lu, size %llu KB, "
-		"%u spare, %u bad blocks\n",
-		MTDSWAP_PREFIX, part, swap_size / 1024, spare_cnt, bad_blocks);
 
 	d = kzalloc(sizeof(struct mtdswap_dev), GFP_KERNEL);
+
 	if (!d)
 		return;
-
 	mbd_dev = kzalloc(sizeof(struct mtd_blktrans_dev), GFP_KERNEL);
 	if (!mbd_dev) {
 		kfree(d);
 		return;
 	}
 
-	d->mbd_dev = mbd_dev;
+	d->mbd = mbd_dev;
 	mbd_dev->priv = d;
 
 	mbd_dev->mtd = mtd;
 	mbd_dev->devnum = mtd->index;
-	mbd_dev->size = swap_size >> PAGE_SHIFT;
+	mbd_dev->size = use_size >> 9;
 	mbd_dev->tr = tr;
 
 	if (!(mtd->flags & MTD_WRITEABLE))
 		mbd_dev->readonly = 1;
 
-	if (mtdswap_init(d, eblocks, spare_cnt) < 0)
+	if (mtdswap_init(d, eblocks) < 0)
 		goto init_failed;
-
 	if (add_mtd_blktrans_dev(mbd_dev) < 0)
 		goto cleanup;
-
 	d->dev = disk_to_dev(mbd_dev->disk);
-
-	ret = mtdswap_add_debugfs(d);
-	if (ret < 0)
-		goto debugfs_failed;
-
 	return;
-
-debugfs_failed:
-	del_mtd_blktrans_dev(mbd_dev);
 
 cleanup:
 	mtdswap_cleanup(d);
@@ -1546,33 +1051,48 @@ init_failed:
 	kfree(d);
 }
 
-static void mtdswap_remove_dev(struct mtd_blktrans_dev *dev)
+static int mtdswap_open(struct mtd_blktrans_dev *dev)
+{
+	return 0;
+}
+
+static int mtdswap_release(struct mtd_blktrans_dev *dev)
 {
 	struct mtdswap_dev *d = MTDSWAP_MBD_TO_MTDSWAP(dev);
-
-	debugfs_remove_recursive(d->debugfs_root);
-	del_mtd_blktrans_dev(dev);
-	mtdswap_cleanup(d);
-	kfree(d);
+	mutex_lock(&d->cache_mutex);
+	write_cached_data(d);
+	mutex_unlock(&d->cache_mutex);
+	return 0;
 }
 
 static struct mtd_blktrans_ops mtdswap_ops = {
-	.name		= "mtdswap",
-	.major		= 0,
-	.part_bits	= 0,
-	.blksize	= PAGE_SIZE,
-	.flush		= mtdswap_flush,
-	.readsect	= mtdswap_readsect,
-	.writesect	= mtdswap_writesect,
-	.discard	= mtdswap_discard,
-	.background	= mtdswap_background,
-	.add_mtd	= mtdswap_add_mtd,
-	.remove_dev	= mtdswap_remove_dev,
-	.owner		= THIS_MODULE,
+	.name = "mtdswap",
+	.major = 0,
+	.part_bits = 0,
+	.blksize = 512,
+	.open = mtdswap_open,
+	.flush = mtdswap_flush,
+	.release = mtdswap_release,
+	.readsect = mtdswap_readsect,
+	.writesect = mtdswap_writesect,
+	.add_mtd = mtdswap_add_mtd,
+	.remove_dev = mtdswap_remove_dev,
+	.owner = THIS_MODULE,
 };
 
 static int __init mtdswap_modinit(void)
 {
+	/* find if resume_file name contains "mtdswap" */
+	int ret = mtdswap_find_mtd(resume_file, "mtdswap");
+	if (!ret){
+		printk(KERN_WARNING"\n[mtdswap] Resume Partition Is Not mtdswap !!!\n");
+		return 0;
+	}
+	parts = &partitions[0];
+	printk(KERN_WARNING"[mtdswap] resume_file:%s, parts=%s\n", resume_file, parts);
+	if(kstrtoul(parts, 0, &part) < 0){
+		printk(KERN_WARNING"[mtdswap] Invalid MTDSWAP Partition Number!!!\n");
+	}
 	return register_mtd_blktrans(&mtdswap_ops);
 }
 
@@ -1583,9 +1103,7 @@ static void __exit mtdswap_modexit(void)
 
 module_init(mtdswap_modinit);
 module_exit(mtdswap_modexit);
-
-
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jarkko Lavinen <jarkko.lavinen@nokia.com>");
+MODULE_AUTHOR("Johnny Liu <johnnyliu@viatech.com.cn>");
 MODULE_DESCRIPTION("Block device access to an MTD suitable for using as "
-		"swap space");
+		   "swap space");

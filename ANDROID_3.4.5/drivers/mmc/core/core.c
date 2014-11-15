@@ -41,8 +41,17 @@
 #include "mmc_ops.h"
 #include "sd_ops.h"
 #include "sdio_ops.h"
+#include "../host/mmc_atsmb.h"
+#include <mach/hardware.h>
+
 
 static struct workqueue_struct *workqueue;
+
+#if 0
+#define DBG(x...)	printk(KERN_ALERT x)
+#else
+#define DBG(x...)	do { } while (0)
+#endif
 
 /*
  * Enabling software CRCs on the data blocks can be a significant (30%)
@@ -75,7 +84,14 @@ MODULE_PARM_DESC(
 static int mmc_schedule_delayed_work(struct delayed_work *work,
 				     unsigned long delay)
 {
-	return queue_delayed_work(workqueue, work, delay);
+	int ret;
+	DBG("[%s] s\n",__func__);
+
+	ret = queue_delayed_work(workqueue, work, delay);
+
+	DBG("[%s] e\n",__func__);
+	return ret;
+	/*return queue_delayed_work(workqueue, work, delay);*/
 }
 
 /*
@@ -83,7 +99,11 @@ static int mmc_schedule_delayed_work(struct delayed_work *work,
  */
 static void mmc_flush_scheduled_work(void)
 {
+	DBG("[%s] s\n",__func__);
+	
 	flush_workqueue(workqueue);
+
+	DBG("[%s] e\n",__func__);
 }
 
 #ifdef CONFIG_FAIL_MMC_REQUEST
@@ -135,6 +155,7 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 {
 	struct mmc_command *cmd = mrq->cmd;
 	int err = cmd->error;
+	DBG("[%s] s\n",__func__);
 
 	if (err && cmd->retries && mmc_host_is_spi(host)) {
 		if (cmd->resp[0] & R1_SPI_ILLEGAL_COMMAND)
@@ -177,6 +198,7 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 
 		mmc_host_clk_release(host);
 	}
+	DBG("[%s] e\n",__func__);
 }
 
 EXPORT_SYMBOL(mmc_request_done);
@@ -188,6 +210,7 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 	unsigned int i, sz;
 	struct scatterlist *sg;
 #endif
+	DBG("[%s] s\n",__func__);
 
 	if (mrq->sbc) {
 		pr_debug("<%s: starting CMD%u arg %08x flags %08x>\n",
@@ -243,23 +266,32 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 	mmc_host_clk_hold(host);
 	led_trigger_event(host->led, LED_FULL);
 	host->ops->request(host, mrq);
+
+	DBG("[%s] e\n",__func__);
 }
 
 static void mmc_wait_done(struct mmc_request *mrq)
 {
+	DBG("[%s] s\n",__func__);
+	
 	complete(&mrq->completion);
+
+	DBG("[%s] e\n",__func__);
 }
 
 static int __mmc_start_req(struct mmc_host *host, struct mmc_request *mrq)
 {
+	DBG("[%s] s\n",__func__);
 	init_completion(&mrq->completion);
 	mrq->done = mmc_wait_done;
 	if (mmc_card_removed(host->card)) {
 		mrq->cmd->error = -ENOMEDIUM;
 		complete(&mrq->completion);
+		DBG("[%s] e1\n",__func__);
 		return -ENOMEDIUM;
 	}
 	mmc_start_request(host, mrq);
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 
@@ -267,7 +299,7 @@ static void mmc_wait_for_req_done(struct mmc_host *host,
 				  struct mmc_request *mrq)
 {
 	struct mmc_command *cmd;
-
+	DBG("[%s] s\n",__func__);
 	while (1) {
 		wait_for_completion(&mrq->completion);
 
@@ -282,6 +314,7 @@ static void mmc_wait_for_req_done(struct mmc_host *host,
 		cmd->error = 0;
 		host->ops->request(host, mrq);
 	}
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -298,11 +331,13 @@ static void mmc_wait_for_req_done(struct mmc_host *host,
 static void mmc_pre_req(struct mmc_host *host, struct mmc_request *mrq,
 		 bool is_first_req)
 {
+	DBG("[%s] s\n",__func__);
 	if (host->ops->pre_req) {
 		mmc_host_clk_hold(host);
 		host->ops->pre_req(host, mrq, is_first_req);
 		mmc_host_clk_release(host);
 	}
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -317,11 +352,13 @@ static void mmc_pre_req(struct mmc_host *host, struct mmc_request *mrq,
 static void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
 			 int err)
 {
+	DBG("[%s] s\n",__func__);
 	if (host->ops->post_req) {
 		mmc_host_clk_hold(host);
 		host->ops->post_req(host, mrq, err);
 		mmc_host_clk_release(host);
 	}
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -346,7 +383,7 @@ struct mmc_async_req *mmc_start_req(struct mmc_host *host,
 	int err = 0;
 	int start_err = 0;
 	struct mmc_async_req *data = host->areq;
-
+	DBG("[%s] s\n",__func__);
 	/* Prepare a new request */
 	if (areq)
 		mmc_pre_req(host, areq->mrq, !host->areq);
@@ -373,6 +410,7 @@ struct mmc_async_req *mmc_start_req(struct mmc_host *host,
 
 	if (error)
 		*error = err;
+	DBG("[%s] e\n",__func__);
 	return data;
 }
 EXPORT_SYMBOL(mmc_start_req);
@@ -388,8 +426,10 @@ EXPORT_SYMBOL(mmc_start_req);
  */
 void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq)
 {
+	DBG("[%s] s\n",__func__);
 	__mmc_start_req(host, mrq);
 	mmc_wait_for_req_done(host, mrq);
+	DBG("[%s] e\n",__func__);
 }
 EXPORT_SYMBOL(mmc_wait_for_req);
 
@@ -404,7 +444,7 @@ int mmc_interrupt_hpi(struct mmc_card *card)
 {
 	int err;
 	u32 status;
-
+	DBG("[%s] s\n",__func__);
 	BUG_ON(!card);
 
 	if (!card->ext_csd.hpi_en) {
@@ -446,6 +486,7 @@ int mmc_interrupt_hpi(struct mmc_card *card)
 
 out:
 	mmc_release_host(card->host);
+	DBG("[%s] e\n",__func__);
 	return err;
 }
 EXPORT_SYMBOL(mmc_interrupt_hpi);
@@ -464,6 +505,8 @@ int mmc_wait_for_cmd(struct mmc_host *host, struct mmc_command *cmd, int retries
 {
 	struct mmc_request mrq = {NULL};
 
+	DBG("[%s] s\n",__func__);
+
 	WARN_ON(!host->claimed);
 
 	memset(cmd->resp, 0, sizeof(cmd->resp));
@@ -474,6 +517,7 @@ int mmc_wait_for_cmd(struct mmc_host *host, struct mmc_command *cmd, int retries
 
 	mmc_wait_for_req(host, &mrq);
 
+	DBG("[%s] e\n",__func__);
 	return cmd->error;
 }
 
@@ -490,13 +534,14 @@ EXPORT_SYMBOL(mmc_wait_for_cmd);
 void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card)
 {
 	unsigned int mult;
-
+	DBG("[%s] s\n",__func__);
 	/*
 	 * SDIO cards only define an upper 1 s limit on access.
 	 */
 	if (mmc_card_sdio(card)) {
 		data->timeout_ns = 1000000000;
 		data->timeout_clks = 0;
+		DBG("[%s] e1\n",__func__);
 		return;
 	}
 
@@ -574,6 +619,8 @@ void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card)
 				data->timeout_ns =  100000000;	/* 100ms */
 		}
 	}
+	
+	DBG("[%s] e2\n",__func__);
 }
 EXPORT_SYMBOL(mmc_set_data_timeout);
 
@@ -620,6 +667,8 @@ int __mmc_claim_host(struct mmc_host *host, atomic_t *abort)
 	unsigned long flags;
 	int stop;
 
+	DBG("[%s] s\n",__func__);
+	
 	might_sleep();
 
 	add_wait_queue(&host->wq, &wait);
@@ -644,6 +693,8 @@ int __mmc_claim_host(struct mmc_host *host, atomic_t *abort)
 	remove_wait_queue(&host->wq, &wait);
 	if (host->ops->enable && !stop && host->claim_cnt == 1)
 		host->ops->enable(host);
+
+	DBG("[%s] e\n",__func__);
 	return stop;
 }
 
@@ -659,6 +710,7 @@ int mmc_try_claim_host(struct mmc_host *host)
 {
 	int claimed_host = 0;
 	unsigned long flags;
+	DBG("[%s] s\n",__func__);
 
 	spin_lock_irqsave(&host->lock, flags);
 	if (!host->claimed || host->claimer == current) {
@@ -670,6 +722,8 @@ int mmc_try_claim_host(struct mmc_host *host)
 	spin_unlock_irqrestore(&host->lock, flags);
 	if (host->ops->enable && claimed_host && host->claim_cnt == 1)
 		host->ops->enable(host);
+	
+	DBG("[%s] e\n",__func__);
 	return claimed_host;
 }
 EXPORT_SYMBOL(mmc_try_claim_host);
@@ -684,6 +738,7 @@ EXPORT_SYMBOL(mmc_try_claim_host);
 void mmc_release_host(struct mmc_host *host)
 {
 	unsigned long flags;
+	DBG("[%s] s\n",__func__);	
 
 	WARN_ON(!host->claimed);
 
@@ -700,6 +755,7 @@ void mmc_release_host(struct mmc_host *host)
 		spin_unlock_irqrestore(&host->lock, flags);
 		wake_up(&host->wq);
 	}
+	DBG("[%s] e\n",__func__);
 }
 EXPORT_SYMBOL(mmc_release_host);
 
@@ -711,6 +767,8 @@ static inline void mmc_set_ios(struct mmc_host *host)
 {
 	struct mmc_ios *ios = &host->ios;
 
+	DBG("[%s] s\n",__func__);
+	
 	pr_debug("%s: clock %uHz busmode %u powermode %u cs %u Vdd %u "
 		"width %u timing %u\n",
 		 mmc_hostname(host), ios->clock, ios->bus_mode,
@@ -720,6 +778,8 @@ static inline void mmc_set_ios(struct mmc_host *host)
 	if (ios->clock > 0)
 		mmc_set_ungated(host);
 	host->ops->set_ios(host, ios);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -727,10 +787,14 @@ static inline void mmc_set_ios(struct mmc_host *host)
  */
 void mmc_set_chip_select(struct mmc_host *host, int mode)
 {
+	DBG("[%s] s\n",__func__);
+		
 	mmc_host_clk_hold(host);
 	host->ios.chip_select = mode;
 	mmc_set_ios(host);
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -739,6 +803,8 @@ void mmc_set_chip_select(struct mmc_host *host, int mode)
  */
 static void __mmc_set_clock(struct mmc_host *host, unsigned int hz)
 {
+	DBG("[%s] s\n",__func__);
+	
 	WARN_ON(hz < host->f_min);
 
 	if (hz > host->f_max)
@@ -746,13 +812,18 @@ static void __mmc_set_clock(struct mmc_host *host, unsigned int hz)
 
 	host->ios.clock = hz;
 	mmc_set_ios(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 void mmc_set_clock(struct mmc_host *host, unsigned int hz)
 {
+	DBG("[%s] s\n",__func__);
 	mmc_host_clk_hold(host);
 	__mmc_set_clock(host, hz);
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 #ifdef CONFIG_MMC_CLKGATE
@@ -762,13 +833,16 @@ void mmc_set_clock(struct mmc_host *host, unsigned int hz)
 void mmc_gate_clock(struct mmc_host *host)
 {
 	unsigned long flags;
-
+	DBG("[%s] s\n",__func__);
+	
 	spin_lock_irqsave(&host->clk_lock, flags);
 	host->clk_old = host->ios.clock;
 	host->ios.clock = 0;
 	host->clk_gated = true;
 	spin_unlock_irqrestore(&host->clk_lock, flags);
 	mmc_set_ios(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -777,6 +851,7 @@ void mmc_gate_clock(struct mmc_host *host)
  */
 void mmc_ungate_clock(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__); 
 	/*
 	 * We should previously have gated the clock, so the clock shall
 	 * be 0 here! The clock may however be 0 during initialization,
@@ -789,12 +864,14 @@ void mmc_ungate_clock(struct mmc_host *host)
 		/* This call will also set host->clk_gated to false */
 		__mmc_set_clock(host, host->clk_old);
 	}
+
+	DBG("[%s] e\n",__func__);
 }
 
 void mmc_set_ungated(struct mmc_host *host)
 {
 	unsigned long flags;
-
+	DBG("[%s] s\n",__func__);
 	/*
 	 * We've been given a new frequency while the clock is gated,
 	 * so make sure we regard this as ungating it.
@@ -802,6 +879,8 @@ void mmc_set_ungated(struct mmc_host *host)
 	spin_lock_irqsave(&host->clk_lock, flags);
 	host->clk_gated = false;
 	spin_unlock_irqrestore(&host->clk_lock, flags);
+
+	DBG("[%s] e\n",__func__);
 }
 
 #else
@@ -815,10 +894,14 @@ void mmc_set_ungated(struct mmc_host *host)
  */
 void mmc_set_bus_mode(struct mmc_host *host, unsigned int mode)
 {
+	DBG("[%s] s\n",__func__);
+	
 	mmc_host_clk_hold(host);
 	host->ios.bus_mode = mode;
 	mmc_set_ios(host);
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -826,10 +909,14 @@ void mmc_set_bus_mode(struct mmc_host *host, unsigned int mode)
  */
 void mmc_set_bus_width(struct mmc_host *host, unsigned int width)
 {
+	DBG("[%s] s\n",__func__);
+	
 	mmc_host_clk_hold(host);
 	host->ios.bus_width = width;
 	mmc_set_ios(host);
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -852,19 +939,28 @@ static int mmc_vdd_to_ocrbitnum(int vdd, bool low_bits)
 	const int max_bit = ilog2(MMC_VDD_35_36);
 	int bit;
 
-	if (vdd < 1650 || vdd > 3600)
+	DBG("[%s] s\n",__func__);
+	
+	if (vdd < 1650 || vdd > 3600) {
+		DBG("[%s] e1\n",__func__);
 		return -EINVAL;
+	}
 
-	if (vdd >= 1650 && vdd <= 1950)
+	if (vdd >= 1650 && vdd <= 1950) {
+		DBG("[%s] e2\n",__func__);
 		return ilog2(MMC_VDD_165_195);
+	}
 
 	if (low_bits)
 		vdd -= 1;
 
 	/* Base 2000 mV, step 100 mV, bit's base 8. */
 	bit = (vdd - 2000) / 100 + 8;
-	if (bit > max_bit)
+	if (bit > max_bit) {
+		DBG("[%s] e3\n",__func__);
 		return max_bit;
+	}
+	DBG("[%s] e4\n",__func__);
 	return bit;
 }
 
@@ -885,23 +981,32 @@ u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max)
 {
 	u32 mask = 0;
 
-	if (vdd_max < vdd_min)
+	DBG("[%s] s\n",__func__);
+	
+	if (vdd_max < vdd_min) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
 	/* Prefer high bits for the boundary vdd_max values. */
 	vdd_max = mmc_vdd_to_ocrbitnum(vdd_max, false);
-	if (vdd_max < 0)
+	if (vdd_max < 0) {
+		DBG("[%s] e2\n",__func__);
 		return 0;
+	}
 
 	/* Prefer low bits for the boundary vdd_min values. */
 	vdd_min = mmc_vdd_to_ocrbitnum(vdd_min, true);
-	if (vdd_min < 0)
+	if (vdd_min < 0) {
+		DBG("[%s] e3\n",__func__);
 		return 0;
+	}
 
 	/* Fill the mask, from max bit to min bit. */
 	while (vdd_max >= vdd_min)
 		mask |= 1 << vdd_max--;
 
+	DBG("[%s] e4\n",__func__);
 	return mask;
 }
 EXPORT_SYMBOL(mmc_vddrange_to_ocrmask);
@@ -923,9 +1028,13 @@ int mmc_regulator_get_ocrmask(struct regulator *supply)
 	int			count;
 	int			i;
 
+	DBG("[%s] s\n",__func__);
+	
 	count = regulator_count_voltages(supply);
-	if (count < 0)
+	if (count < 0) {
+		DBG("[%s] e1\n",__func__);
 		return count;
+	}
 
 	for (i = 0; i < count; i++) {
 		int		vdd_uV;
@@ -939,6 +1048,7 @@ int mmc_regulator_get_ocrmask(struct regulator *supply)
 		result |= mmc_vddrange_to_ocrmask(vdd_mV, vdd_mV);
 	}
 
+	DBG("[%s] e2\n",__func__);
 	return result;
 }
 EXPORT_SYMBOL(mmc_regulator_get_ocrmask);
@@ -962,6 +1072,8 @@ int mmc_regulator_set_ocr(struct mmc_host *mmc,
 	int			result = 0;
 	int			min_uV, max_uV;
 
+	DBG("[%s] s\n",__func__);
+	
 	if (vdd_bit) {
 		int		tmp;
 		int		voltage;
@@ -1009,6 +1121,8 @@ int mmc_regulator_set_ocr(struct mmc_host *mmc,
 	if (result)
 		dev_err(mmc_dev(mmc),
 			"could not set regulator OCR (%d)\n", result);
+
+	DBG("[%s] e\n",__func__);
 	return result;
 }
 EXPORT_SYMBOL(mmc_regulator_set_ocr);
@@ -1022,6 +1136,8 @@ EXPORT_SYMBOL(mmc_regulator_set_ocr);
 u32 mmc_select_voltage(struct mmc_host *host, u32 ocr)
 {
 	int bit;
+
+	DBG("[%s] s\n",__func__);
 
 	ocr &= host->ocr_avail;
 
@@ -1041,6 +1157,7 @@ u32 mmc_select_voltage(struct mmc_host *host, u32 ocr)
 		ocr = 0;
 	}
 
+	DBG("[%s] e\n",__func__);
 	return ocr;
 }
 
@@ -1048,6 +1165,8 @@ int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage, bool cmd11
 {
 	struct mmc_command cmd = {0};
 	int err = 0;
+
+	DBG("[%s] s\n",__func__);
 
 	BUG_ON(!host);
 
@@ -1061,11 +1180,15 @@ int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage, bool cmd11
 		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
 
 		err = mmc_wait_for_cmd(host, &cmd, 0);
-		if (err)
+		if (err) {
+			DBG("[%s] e1\n",__func__);
 			return err;
+		}
 
-		if (!mmc_host_is_spi(host) && (cmd.resp[0] & R1_ERROR))
+		if (!mmc_host_is_spi(host) && (cmd.resp[0] & R1_ERROR)) {
+			DBG("[%s] e2\n",__func__);
 			return -EIO;
+		}
 	}
 
 	host->ios.signal_voltage = signal_voltage;
@@ -1075,7 +1198,7 @@ int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage, bool cmd11
 		err = host->ops->start_signal_voltage_switch(host, &host->ios);
 		mmc_host_clk_release(host);
 	}
-
+	DBG("[%s] e3\n",__func__);
 	return err;
 }
 
@@ -1084,10 +1207,14 @@ int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage, bool cmd11
  */
 void mmc_set_timing(struct mmc_host *host, unsigned int timing)
 {
+	DBG("[%s] s\n",__func__);
+	
 	mmc_host_clk_hold(host);
 	host->ios.timing = timing;
 	mmc_set_ios(host);
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -1095,10 +1222,14 @@ void mmc_set_timing(struct mmc_host *host, unsigned int timing)
  */
 void mmc_set_driver_type(struct mmc_host *host, unsigned int drv_type)
 {
+	DBG("[%s] s\n",__func__);
+	
 	mmc_host_clk_hold(host);
 	host->ios.drv_type = drv_type;
 	mmc_set_ios(host);
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 static void mmc_poweroff_notify(struct mmc_host *host)
@@ -1107,6 +1238,8 @@ static void mmc_poweroff_notify(struct mmc_host *host)
 	unsigned int timeout;
 	unsigned int notify_type = EXT_CSD_NO_POWER_NOTIFICATION;
 	int err = 0;
+	
+	DBG("[%s] s\n",__func__);
 
 	card = host->card;
 	mmc_claim_host(host);
@@ -1141,6 +1274,8 @@ static void mmc_poweroff_notify(struct mmc_host *host)
 		card->poweroff_notify_state = MMC_NO_POWER_NOTIFICATION;
 	}
 	mmc_release_host(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -1157,6 +1292,8 @@ static void mmc_poweroff_notify(struct mmc_host *host)
 static void mmc_power_up(struct mmc_host *host)
 {
 	int bit;
+	
+	DBG("[%s] s\n",__func__);
 
 	mmc_host_clk_hold(host);
 
@@ -1195,11 +1332,14 @@ static void mmc_power_up(struct mmc_host *host)
 	mmc_delay(10);
 
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 void mmc_power_off(struct mmc_host *host)
 {
 	int err = 0;
+	DBG("[%s] s\n",__func__);
 	mmc_host_clk_hold(host);
 
 	host->ios.clock = 0;
@@ -1245,6 +1385,8 @@ void mmc_power_off(struct mmc_host *host)
 	mmc_delay(1);
 
 	mmc_host_clk_release(host);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -1252,11 +1394,14 @@ void mmc_power_off(struct mmc_host *host)
  */
 static void __mmc_release_bus(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 	BUG_ON(!host);
 	BUG_ON(host->bus_refs);
 	BUG_ON(!host->bus_dead);
 
 	host->bus_ops = NULL;
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -1265,10 +1410,13 @@ static void __mmc_release_bus(struct mmc_host *host)
 static inline void mmc_bus_get(struct mmc_host *host)
 {
 	unsigned long flags;
-
+	DBG("[%s] s\n",__func__);
+	
 	spin_lock_irqsave(&host->lock, flags);
 	host->bus_refs++;
 	spin_unlock_irqrestore(&host->lock, flags);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -1278,20 +1426,26 @@ static inline void mmc_bus_get(struct mmc_host *host)
 static inline void mmc_bus_put(struct mmc_host *host)
 {
 	unsigned long flags;
+	DBG("[%s] s\n",__func__);
 
 	spin_lock_irqsave(&host->lock, flags);
 	host->bus_refs--;
 	if ((host->bus_refs == 0) && host->bus_ops)
 		__mmc_release_bus(host);
 	spin_unlock_irqrestore(&host->lock, flags);
+
+	DBG("[%s] e\n",__func__);
 }
 
 int mmc_resume_bus(struct mmc_host *host)
 {
 	unsigned long flags;
-
-	if (!mmc_bus_needs_resume(host))
+	DBG("[%s] s\n",__func__);
+	
+	if (!mmc_bus_needs_resume(host)) {
+		DBG("[%s] e1\n",__func__);
 		return -EINVAL;
+	}
 
 	printk("%s: Starting deferred resume\n", mmc_hostname(host));
 	spin_lock_irqsave(&host->lock, flags);
@@ -1311,6 +1465,7 @@ int mmc_resume_bus(struct mmc_host *host)
 
 	mmc_bus_put(host);
 	printk("%s: Deferred resume completed\n", mmc_hostname(host));
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 
@@ -1324,6 +1479,8 @@ void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops)
 {
 	unsigned long flags;
 
+	DBG("[%s] s\n",__func__);
+	
 	BUG_ON(!host);
 	BUG_ON(!ops);
 
@@ -1339,6 +1496,8 @@ void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops)
 	host->bus_dead = 0;
 
 	spin_unlock_irqrestore(&host->lock, flags);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -1348,6 +1507,8 @@ void mmc_detach_bus(struct mmc_host *host)
 {
 	unsigned long flags;
 
+	DBG("[%s] s\n",__func__);
+	
 	BUG_ON(!host);
 
 	WARN_ON(!host->claimed);
@@ -1360,6 +1521,8 @@ void mmc_detach_bus(struct mmc_host *host)
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	mmc_bus_put(host);
+	
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -1374,6 +1537,8 @@ void mmc_detach_bus(struct mmc_host *host)
  */
 void mmc_detect_change(struct mmc_host *host, unsigned long delay)
 {
+	DBG("[%s] s\n",__func__);
+	
 #ifdef CONFIG_MMC_DEBUG
 	unsigned long flags;
 	spin_lock_irqsave(&host->lock, flags);
@@ -1384,6 +1549,8 @@ void mmc_detect_change(struct mmc_host *host, unsigned long delay)
 
 	wake_lock(&host->detect_wake_lock);
 	mmc_schedule_delayed_work(&host->detect, delay);
+
+	DBG("[%s] e\n",__func__);
 }
 
 EXPORT_SYMBOL(mmc_detect_change);
@@ -1392,6 +1559,8 @@ void mmc_init_erase(struct mmc_card *card)
 {
 	unsigned int sz;
 
+	DBG("[%s] s\n",__func__);
+	
 	if (is_power_of_2(card->erase_size))
 		card->erase_shift = ffs(card->erase_size) - 1;
 	else
@@ -1435,6 +1604,8 @@ void mmc_init_erase(struct mmc_card *card)
 				card->pref_erase += card->erase_size - sz;
 		}
 	}
+
+	DBG("[%s] e\n",__func__);
 }
 
 static unsigned int mmc_mmc_erase_timeout(struct mmc_card *card,
@@ -1442,6 +1613,8 @@ static unsigned int mmc_mmc_erase_timeout(struct mmc_card *card,
 {
 	unsigned int erase_timeout;
 
+	DBG("[%s] s\n",__func__);
+	
 	if (arg == MMC_DISCARD_ARG ||
 	    (arg == MMC_TRIM_ARG && card->ext_csd.rev >= 6)) {
 		erase_timeout = card->ext_csd.trim_timeout;
@@ -1498,6 +1671,7 @@ static unsigned int mmc_mmc_erase_timeout(struct mmc_card *card,
 	if (mmc_host_is_spi(card->host) && erase_timeout < 1000)
 		erase_timeout = 1000;
 
+	DBG("[%s] e\n",__func__);
 	return erase_timeout;
 }
 
@@ -1507,6 +1681,8 @@ static unsigned int mmc_sd_erase_timeout(struct mmc_card *card,
 {
 	unsigned int erase_timeout;
 
+	DBG("[%s] s\n",__func__);
+	
 	if (card->ssr.erase_timeout) {
 		/* Erase timeout specified in SD Status Register (SSR) */
 		erase_timeout = card->ssr.erase_timeout * qty +
@@ -1523,6 +1699,7 @@ static unsigned int mmc_sd_erase_timeout(struct mmc_card *card,
 	if (erase_timeout < 1000)
 		erase_timeout = 1000;
 
+	DBG("[%s] e\n",__func__);
 	return erase_timeout;
 }
 
@@ -1530,10 +1707,22 @@ static unsigned int mmc_erase_timeout(struct mmc_card *card,
 				      unsigned int arg,
 				      unsigned int qty)
 {
-	if (mmc_card_sd(card))
-		return mmc_sd_erase_timeout(card, arg, qty);
-	else
-		return mmc_mmc_erase_timeout(card, arg, qty);
+	unsigned int ret;
+	
+	DBG("[%s] s\n",__func__);
+	
+	if (mmc_card_sd(card)) {
+		ret = mmc_sd_erase_timeout(card, arg, qty);
+		/*return mmc_sd_erase_timeout(card, arg, qty);*/
+		DBG("[%s] e1\n",__func__);
+		return ret;
+	} else {
+		ret = mmc_mmc_erase_timeout(card, arg, qty);
+		/*return mmc_mmc_erase_timeout(card, arg, qty);*/
+		DBG("[%s] e2\n",__func__);
+		return ret;
+	}
+
 }
 
 static int mmc_do_erase(struct mmc_card *card, unsigned int from,
@@ -1543,6 +1732,7 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 	unsigned int qty = 0;
 	int err;
 
+	DBG("[%s] s\n",__func__);
 	/*
 	 * qty is used to calculate the erase timeout which depends on how many
 	 * erase groups (or allocation units in SD terminology) are affected.
@@ -1578,7 +1768,8 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 	else
 		cmd.opcode = MMC_ERASE_GROUP_START;
 	cmd.arg = from;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
 	err = mmc_wait_for_cmd(card->host, &cmd, 0);
 	if (err) {
 		pr_err("mmc_erase: group start error %d, "
@@ -1593,7 +1784,8 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 	else
 		cmd.opcode = MMC_ERASE_GROUP_END;
 	cmd.arg = to;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
 	err = mmc_wait_for_cmd(card->host, &cmd, 0);
 	if (err) {
 		pr_err("mmc_erase: group end error %d, status %#x\n",
@@ -1605,7 +1797,8 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 	memset(&cmd, 0, sizeof(struct mmc_command));
 	cmd.opcode = MMC_ERASE;
 	cmd.arg = arg;
-	cmd.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+	//cmd.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+	cmd.flags = MMC_RSP_R1B | MMC_CMD_AC;
 	cmd.cmd_timeout_ms = mmc_erase_timeout(card, arg, qty);
 	err = mmc_wait_for_cmd(card->host, &cmd, 0);
 	if (err) {
@@ -1650,28 +1843,43 @@ int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
 	      unsigned int arg)
 {
 	unsigned int rem, to = from + nr;
+	int ret;
+
+	DBG("[%s] s\n",__func__);
 
 	if (!(card->host->caps & MMC_CAP_ERASE) ||
-	    !(card->csd.cmdclass & CCC_ERASE))
+	    !(card->csd.cmdclass & CCC_ERASE)) {
+		DBG("[%s] e1\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
-	if (!card->erase_size)
+	if (!card->erase_size) {
+		DBG("[%s] e2\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
-	if (mmc_card_sd(card) && arg != MMC_ERASE_ARG)
+	if (mmc_card_sd(card) && arg != MMC_ERASE_ARG) {
+		DBG("[%s] e3\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
 	if ((arg & MMC_SECURE_ARGS) &&
-	    !(card->ext_csd.sec_feature_support & EXT_CSD_SEC_ER_EN))
+	    !(card->ext_csd.sec_feature_support & EXT_CSD_SEC_ER_EN)) {
+		DBG("[%s] e4\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
 	if ((arg & MMC_TRIM_ARGS) &&
-	    !(card->ext_csd.sec_feature_support & EXT_CSD_SEC_GB_CL_EN))
+	    !(card->ext_csd.sec_feature_support & EXT_CSD_SEC_GB_CL_EN)) {
+		DBG("[%s] e5\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
 	if (arg == MMC_SECURE_ERASE_ARG) {
-		if (from % card->erase_size || nr % card->erase_size)
+		if (from % card->erase_size || nr % card->erase_size) {
+			DBG("[%s] e6\n",__func__);
 			return -EINVAL;
+		}
 	}
 
 	if (arg == MMC_ERASE_ARG) {
@@ -1681,72 +1889,107 @@ int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
 			from += rem;
 			if (nr > rem)
 				nr -= rem;
-			else
+			else {
+				DBG("[%s] e7\n",__func__);
 				return 0;
+			}
 		}
 		rem = nr % card->erase_size;
 		if (rem)
 			nr -= rem;
 	}
 
-	if (nr == 0)
+	if (nr == 0) {
+		DBG("[%s] e8\n",__func__);
 		return 0;
+	}
 
 	to = from + nr;
 
-	if (to <= from)
+	if (to <= from) {
+		DBG("[%s] e9\n",__func__);
 		return -EINVAL;
+	}
 
 	/* 'from' and 'to' are inclusive */
 	to -= 1;
 
-	return mmc_do_erase(card, from, to, arg);
+	ret = mmc_do_erase(card, from, to, arg);
+	DBG("[%s] e10\n",__func__);	
+	/*return mmc_do_erase(card, from, to, arg);*/
+	return ret;
 }
 EXPORT_SYMBOL(mmc_erase);
 
 int mmc_can_erase(struct mmc_card *card)
 {
+	DBG("[%s] s\n",__func__);
+	
 	if ((card->host->caps & MMC_CAP_ERASE) &&
-	    (card->csd.cmdclass & CCC_ERASE) && card->erase_size)
+	    (card->csd.cmdclass & CCC_ERASE) && card->erase_size) {
+		DBG("[%s] e1\n",__func__);
 		return 1;
+	}
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 EXPORT_SYMBOL(mmc_can_erase);
 
 int mmc_can_trim(struct mmc_card *card)
 {
-	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_GB_CL_EN)
+	DBG("[%s] s\n",__func__);
+	
+	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_GB_CL_EN) {
+		DBG("[%s] e1\n",__func__);
 		return 1;
+	}
+
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 EXPORT_SYMBOL(mmc_can_trim);
 
 int mmc_can_discard(struct mmc_card *card)
 {
+	DBG("[%s] s\n",__func__);
 	/*
 	 * As there's no way to detect the discard support bit at v4.5
 	 * use the s/w feature support filed.
 	 */
-	if (card->ext_csd.feature_support & MMC_DISCARD_FEATURE)
+	if (card->ext_csd.feature_support & MMC_DISCARD_FEATURE) {
+		DBG("[%s] e1\n",__func__);
 		return 1;
+	}
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 EXPORT_SYMBOL(mmc_can_discard);
 
 int mmc_can_sanitize(struct mmc_card *card)
 {
-	if (!mmc_can_trim(card) && !mmc_can_erase(card))
+	DBG("[%s] s\n",__func__);
+	if (!mmc_can_trim(card) && !mmc_can_erase(card)) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
-	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_SANITIZE)
+	}
+	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_SANITIZE) {
+		DBG("[%s] e2\n",__func__);
 		return 1;
+	}
+	DBG("[%s] e3\n",__func__);
 	return 0;
 }
 EXPORT_SYMBOL(mmc_can_sanitize);
 
 int mmc_can_secure_erase_trim(struct mmc_card *card)
 {
-	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_ER_EN)
+	DBG("[%s] s\n",__func__);
+	
+	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_ER_EN) {
+		DBG("[%s] e1\n",__func__);
 		return 1;
+	}
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 EXPORT_SYMBOL(mmc_can_secure_erase_trim);
@@ -1754,10 +1997,16 @@ EXPORT_SYMBOL(mmc_can_secure_erase_trim);
 int mmc_erase_group_aligned(struct mmc_card *card, unsigned int from,
 			    unsigned int nr)
 {
-	if (!card->erase_size)
+	DBG("[%s] s\n",__func__);
+	if (!card->erase_size) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
-	if (from % card->erase_size || nr % card->erase_size)
+	}
+	if (from % card->erase_size || nr % card->erase_size) {
+		DBG("[%s] e2\n",__func__);
 		return 0;
+	}
+	DBG("[%s] e3\n",__func__);
 	return 1;
 }
 EXPORT_SYMBOL(mmc_erase_group_aligned);
@@ -1768,6 +2017,8 @@ static unsigned int mmc_do_calc_max_discard(struct mmc_card *card,
 	struct mmc_host *host = card->host;
 	unsigned int max_discard, x, y, qty = 0, max_qty, timeout;
 	unsigned int last_timeout = 0;
+
+	DBG("[%s] s\n",__func__);
 
 	if (card->erase_shift)
 		max_qty = UINT_MAX >> card->erase_shift;
@@ -1791,11 +2042,15 @@ static unsigned int mmc_do_calc_max_discard(struct mmc_card *card,
 		qty += y;
 	} while (y);
 
-	if (!qty)
+	if (!qty) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
-	if (qty == 1)
+	if (qty == 1) {
+		DBG("[%s] e2\n",__func__);
 		return 1;
+	}
 
 	/* Convert qty to sectors */
 	if (card->erase_shift)
@@ -1805,6 +2060,7 @@ static unsigned int mmc_do_calc_max_discard(struct mmc_card *card,
 	else
 		max_discard = --qty * card->erase_size;
 
+	DBG("[%s] e3\n",__func__);
 	return max_discard;
 }
 
@@ -1812,17 +2068,21 @@ unsigned int mmc_calc_max_discard(struct mmc_card *card)
 {
 	struct mmc_host *host = card->host;
 	unsigned int max_discard, max_trim;
-
-	if (!host->max_discard_to)
+	DBG("[%s] s\n",__func__);
+	if (!host->max_discard_to) {
+		DBG("[%s] e1\n",__func__);
 		return UINT_MAX;
+	}
 
 	/*
 	 * Without erase_group_def set, MMC erase timeout depends on clock
 	 * frequence which can change.  In that case, the best choice is
 	 * just the preferred erase size.
 	 */
-	if (mmc_card_mmc(card) && !(card->ext_csd.erase_group_def & 1))
+	if (mmc_card_mmc(card) && !(card->ext_csd.erase_group_def & 1)) {
+		DBG("[%s] e2\n",__func__);
 		return card->pref_erase;
+	}
 
 	max_discard = mmc_do_calc_max_discard(card, MMC_ERASE_ARG);
 	if (mmc_can_trim(card)) {
@@ -1834,6 +2094,7 @@ unsigned int mmc_calc_max_discard(struct mmc_card *card)
 	}
 	pr_debug("%s: calculated max. discard sectors %u for timeout %u ms\n",
 		 mmc_hostname(host), max_discard, host->max_discard_to);
+	DBG("[%s] e3\n",__func__);
 	return max_discard;
 }
 EXPORT_SYMBOL(mmc_calc_max_discard);
@@ -1841,35 +2102,57 @@ EXPORT_SYMBOL(mmc_calc_max_discard);
 int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen)
 {
 	struct mmc_command cmd = {0};
+	int ret;
+	
+	DBG("[%s] s\n",__func__);
 
-	if (mmc_card_blockaddr(card) || mmc_card_ddr_mode(card))
+	if (mmc_card_blockaddr(card) || mmc_card_ddr_mode(card)) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
 	cmd.opcode = MMC_SET_BLOCKLEN;
 	cmd.arg = blocklen;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
-	return mmc_wait_for_cmd(card->host, &cmd, 5);
+	//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+	ret = mmc_wait_for_cmd(card->host, &cmd, 5);
+
+	/*return mmc_wait_for_cmd(card->host, &cmd, 5);*/
+	DBG("[%s] e1\n",__func__);
+	return ret;
 }
 EXPORT_SYMBOL(mmc_set_blocklen);
 
 static void mmc_hw_reset_for_init(struct mmc_host *host)
 {
-	if (!(host->caps & MMC_CAP_HW_RESET) || !host->ops->hw_reset)
+	DBG("[%s] s\n",__func__);
+	
+	if (!(host->caps & MMC_CAP_HW_RESET) || !host->ops->hw_reset) {
+		DBG("[%s] e1\n",__func__);
 		return;
+	}
 	mmc_host_clk_hold(host);
 	host->ops->hw_reset(host);
 	mmc_host_clk_release(host);
+	DBG("[%s] e2\n",__func__);
 }
 
 int mmc_can_reset(struct mmc_card *card)
 {
 	u8 rst_n_function;
 
-	if (!mmc_card_mmc(card))
+	DBG("[%s] s\n",__func__);
+
+	if (!mmc_card_mmc(card)) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 	rst_n_function = card->ext_csd.rst_n_function;
-	if ((rst_n_function & EXT_CSD_RST_N_EN_MASK) != EXT_CSD_RST_N_ENABLED)
+	if ((rst_n_function & EXT_CSD_RST_N_EN_MASK) != EXT_CSD_RST_N_ENABLED) {
+		DBG("[%s] e2\n",__func__);
 		return 0;
+	}
+	DBG("[%s] e3\n",__func__);
 	return 1;
 }
 EXPORT_SYMBOL(mmc_can_reset);
@@ -1877,18 +2160,26 @@ EXPORT_SYMBOL(mmc_can_reset);
 static int mmc_do_hw_reset(struct mmc_host *host, int check)
 {
 	struct mmc_card *card = host->card;
-
-	if (!host->bus_ops->power_restore)
+	DBG("[%s] s\n",__func__);
+	if (!host->bus_ops->power_restore) {
+		DBG("[%s] e1\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
-	if (!(host->caps & MMC_CAP_HW_RESET) || !host->ops->hw_reset)
+	if (!(host->caps & MMC_CAP_HW_RESET) || !host->ops->hw_reset) {
+		DBG("[%s] e2\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
-	if (!card)
+	if (!card) {
+		DBG("[%s] e3\n",__func__);
 		return -EINVAL;
-
-	if (!mmc_can_reset(card))
+	}
+	
+	if (!mmc_can_reset(card)) {
+		DBG("[%s] e4\n",__func__);
 		return -EOPNOTSUPP;
+	}
 
 	mmc_host_clk_hold(host);
 	mmc_set_clock(host, host->f_init);
@@ -1903,10 +2194,12 @@ static int mmc_do_hw_reset(struct mmc_host *host, int check)
 		cmd.opcode = MMC_SEND_STATUS;
 		if (!mmc_host_is_spi(card->host))
 			cmd.arg = card->rca << 16;
-		cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_AC;
+		//cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_AC;
+		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
 		err = mmc_wait_for_cmd(card->host, &cmd, 0);
 		if (!err) {
 			mmc_host_clk_release(host);
+			DBG("[%s] e5\n",__func__);
 			return -ENOSYS;
 		}
 	}
@@ -1924,24 +2217,28 @@ static int mmc_do_hw_reset(struct mmc_host *host, int check)
 	mmc_set_ios(host);
 
 	mmc_host_clk_release(host);
-
+	DBG("[%s] e6\n",__func__);
 	return host->bus_ops->power_restore(host);
 }
 
 int mmc_hw_reset(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 	return mmc_do_hw_reset(host, 0);
 }
 EXPORT_SYMBOL(mmc_hw_reset);
 
 int mmc_hw_reset_check(struct mmc_host *host)
-{
+{	
+	DBG("[%s] s\n",__func__);
 	return mmc_do_hw_reset(host, 1);
 }
 EXPORT_SYMBOL(mmc_hw_reset_check);
 
 static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 {
+	DBG("[%s] s\n",__func__);
+	
 	host->f_init = freq;
 
 #ifdef CONFIG_MMC_DEBUG
@@ -1970,33 +2267,45 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 	mmc_send_if_cond(host, host->ocr_avail);
 
 	/* Order's important: probe SDIO, then SD, then MMC */
-	if (!mmc_attach_sdio(host))
+	if (!mmc_attach_sdio(host)) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
-	if (!mmc_attach_sd(host))
+	}
+	if (!mmc_attach_sd(host)) {
+		DBG("[%s] e2\n",__func__);
 		return 0;
-	if (!mmc_attach_mmc(host))
+	}
+	if (!mmc_attach_mmc(host)) {
+		DBG("[%s] e3\n",__func__);
 		return 0;
+	}
 
 	mmc_power_off(host);
+	DBG("[%s] e4\n",__func__);
 	return -EIO;
 }
 
 int _mmc_detect_card_removed(struct mmc_host *host)
 {
 	int ret;
-
-	if ((host->caps & MMC_CAP_NONREMOVABLE) || !host->bus_ops->alive)
+	
+	DBG("[%s] s\n",__func__);
+	if ((host->caps & MMC_CAP_NONREMOVABLE) || !host->bus_ops->alive) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
-	if (!host->card || mmc_card_removed(host->card))
+	if (!host->card || mmc_card_removed(host->card)) {
+		DBG("[%s] e2\n",__func__);
 		return 1;
+	}
 
 	ret = host->bus_ops->alive(host);
 	if (ret) {
 		mmc_card_set_removed(host->card);
 		pr_debug("%s: card remove detected\n", mmc_hostname(host));
 	}
-
+	DBG("[%s] e3\n",__func__);
 	return ret;
 }
 
@@ -2004,20 +2313,25 @@ int mmc_detect_card_removed(struct mmc_host *host)
 {
 	struct mmc_card *card = host->card;
 	int ret;
-
+	
+	DBG("[%s] s\n",__func__);
+	
 	WARN_ON(!host->claimed);
 
-	if (!card)
+	if (!card) {
+		DBG("[%s] e1\n",__func__);
 		return 1;
-
+	}
 	ret = mmc_card_removed(card);
 	/*
 	 * The card will be considered unchanged unless we have been asked to
 	 * detect a change or host requires polling to provide card detection.
 	 */
 	if (!host->detect_change && !(host->caps & MMC_CAP_NEEDS_POLL) &&
-	    !(host->caps2 & MMC_CAP2_DETECT_ON_ERR))
+	    !(host->caps2 & MMC_CAP2_DETECT_ON_ERR)) {
+		DBG("[%s] e2\n",__func__);
 		return ret;
+	}
 
 	host->detect_change = 0;
 	if (!ret) {
@@ -2031,7 +2345,7 @@ int mmc_detect_card_removed(struct mmc_host *host)
 			mmc_detect_change(host, 0);
 		}
 	}
-
+	DBG("[%s] e3\n",__func__);
 	return ret;
 }
 EXPORT_SYMBOL(mmc_detect_card_removed);
@@ -2043,80 +2357,110 @@ void mmc_rescan(struct work_struct *work)
 		container_of(work, struct mmc_host, detect.work);
 	int i;
 	bool extend_wakelock = false;
+    struct atsmb_host *atsmb_host = mmc_priv(host);	
+	int retry = 5;
+
+	DBG("[%s] s\n",__func__);
+	host->card_scan_status = false;
 
 	if (host->rescan_disable)
 		return;
 
-	mmc_bus_get(host);
+	while(retry > 0) {
+		retry--;	
+		mmc_bus_get(host);
 
-	/*
-	 * if there is a _removable_ card registered, check whether it is
-	 * still present
-	 */
-	if (host->bus_ops && host->bus_ops->detect && !host->bus_dead
-	    && !(host->caps & MMC_CAP_NONREMOVABLE))
-		host->bus_ops->detect(host);
+		/*
+		 * if there is a _removable_ card registered, check whether it is
+		 * still present
+		 */
+		if (host->bus_ops && host->bus_ops->detect && !host->bus_dead
+		    && !(host->caps & MMC_CAP_NONREMOVABLE))
+			host->bus_ops->detect(host);
 
-	host->detect_change = 0;
+		host->detect_change = 0;
 
-	/* If the card was removed the bus will be marked
-	 * as dead - extend the wakelock so userspace
-	 * can respond */
-	if (host->bus_dead)
-		extend_wakelock = 1;
+		/* If the card was removed the bus will be marked
+		 * as dead - extend the wakelock so userspace
+		 * can respond */
+		if (host->bus_dead)
+			extend_wakelock = 1;
 
-	/*
-	 * Let mmc_bus_put() free the bus/bus_ops if we've found that
-	 * the card is no longer present.
-	 */
-	mmc_bus_put(host);
-	mmc_bus_get(host);
-
-	/* if there still is a card present, stop here */
-	if (host->bus_ops != NULL) {
+		/*
+		 * Let mmc_bus_put() free the bus/bus_ops if we've found that
+		 * the card is no longer present.
+		 */
 		mmc_bus_put(host);
-		goto out;
-	}
+		mmc_bus_get(host);
 
-	/*
-	 * Only we can add a new handler, so it's safe to
-	 * release the lock here.
-	 */
-	mmc_bus_put(host);
-
-	if (host->ops->get_cd && host->ops->get_cd(host) == 0)
-		goto out;
-
-	mmc_claim_host(host);
-	for (i = 0; i < ARRAY_SIZE(freqs); i++) {
-		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min))) {
-			extend_wakelock = true;
-			break;
+		/* if there still is a card present, stop here */
+		if (host->bus_ops != NULL) {
+			mmc_bus_put(host);
+			goto out;
 		}
-		if (freqs[i] <= host->f_min)
-			break;
-	}
-	mmc_release_host(host);
 
- out:
-	if (extend_wakelock)
-		wake_lock_timeout(&host->detect_wake_lock, HZ / 2);
-	else
-		wake_unlock(&host->detect_wake_lock);
-	if (host->caps & MMC_CAP_NEEDS_POLL) {
-		wake_lock(&host->detect_wake_lock);
-		mmc_schedule_delayed_work(&host->detect, HZ);
+		/*
+		 * Only we can add a new handler, so it's safe to
+		 * release the lock here.
+		 */
+		mmc_bus_put(host);
+
+		if (host->ops->get_cd && host->ops->get_cd(host) == 0)
+			goto out;
+
+		mmc_claim_host(host);
+		for (i = 0; i < ARRAY_SIZE(freqs); i++) {
+			if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min))) {
+				extend_wakelock = true;
+				break;
+			}
+			if (freqs[i] <= host->f_min)
+				break;
+		}
+		mmc_release_host(host);
+
+	 out:
+		if (extend_wakelock)
+			wake_lock_timeout(&host->detect_wake_lock, HZ / 2);
+		else
+			wake_unlock(&host->detect_wake_lock);
+		if (host->caps & MMC_CAP_NEEDS_POLL) {
+			wake_lock(&host->detect_wake_lock);
+			mmc_schedule_delayed_work(&host->detect, HZ);
+		}
+
+		DBG("[%s]retry = %d slot = %x power = %x\n",
+			__func__,retry,host->ops->get_slot_status(host),
+			host->ios.power_mode);
+
+		if((host->ops->get_slot_status(host) == 0) ||
+			(host->ios.power_mode != MMC_POWER_OFF))
+			break;
+
+		msleep(1000);
+		
 	}
+	if (host->ios.power_mode != MMC_POWER_OFF)
+		host->card_scan_status = true;
+    printk("SD%d Host Clock %dHz\n",host->wmt_host_index, atsmb_host->current_clock);
+	
+	DBG("[%s] e\n",__func__);
 }
 
-void mmc_start_host(struct mmc_host *host)
+void mmc_start_host(struct mmc_host *host,bool detect)
 {
+	DBG("[%s] s\n",__func__);
+	
 	mmc_power_off(host);
-	mmc_detect_change(host, 0);
+	if (detect == true)
+		mmc_detect_change(host, 0);
+	
+	DBG("[%s] e\n",__func__);
 }
 
 void mmc_stop_host(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 #ifdef CONFIG_MMC_DEBUG
 	unsigned long flags;
 	spin_lock_irqsave(&host->lock, flags);
@@ -2142,6 +2486,7 @@ void mmc_stop_host(struct mmc_host *host)
 		mmc_power_off(host);
 		mmc_release_host(host);
 		mmc_bus_put(host);
+		DBG("[%s] e1\n",__func__);
 		return;
 	}
 	mmc_bus_put(host);
@@ -2149,12 +2494,16 @@ void mmc_stop_host(struct mmc_host *host)
 	BUG_ON(host->card);
 
 	mmc_power_off(host);
+
+	DBG("[%s] e2\n",__func__);
 }
 
 int mmc_power_save_host(struct mmc_host *host)
 {
 	int ret = 0;
 
+	DBG("[%s] s\n",__func__);
+	
 #ifdef CONFIG_MMC_DEBUG
 	pr_info("%s: %s: powering down\n", mmc_hostname(host), __func__);
 #endif
@@ -2163,6 +2512,7 @@ int mmc_power_save_host(struct mmc_host *host)
 
 	if (!host->bus_ops || host->bus_dead || !host->bus_ops->power_restore) {
 		mmc_bus_put(host);
+		DBG("[%s] e1\n",__func__);
 		return -EINVAL;
 	}
 
@@ -2173,6 +2523,7 @@ int mmc_power_save_host(struct mmc_host *host)
 
 	mmc_power_off(host);
 
+	DBG("[%s] e2\n",__func__);
 	return ret;
 }
 EXPORT_SYMBOL(mmc_power_save_host);
@@ -2181,6 +2532,8 @@ int mmc_power_restore_host(struct mmc_host *host)
 {
 	int ret;
 
+	DBG("[%s] s\n",__func__);
+	
 #ifdef CONFIG_MMC_DEBUG
 	pr_info("%s: %s: powering up\n", mmc_hostname(host), __func__);
 #endif
@@ -2189,6 +2542,7 @@ int mmc_power_restore_host(struct mmc_host *host)
 
 	if (!host->bus_ops || host->bus_dead || !host->bus_ops->power_restore) {
 		mmc_bus_put(host);
+		DBG("[%s] e1\n",__func__);
 		return -EINVAL;
 	}
 
@@ -2196,7 +2550,7 @@ int mmc_power_restore_host(struct mmc_host *host)
 	ret = host->bus_ops->power_restore(host);
 
 	mmc_bus_put(host);
-
+	DBG("[%s] e2\n",__func__);
 	return ret;
 }
 EXPORT_SYMBOL(mmc_power_restore_host);
@@ -2205,8 +2559,12 @@ int mmc_card_awake(struct mmc_host *host)
 {
 	int err = -ENOSYS;
 
-	if (host->caps2 & MMC_CAP2_NO_SLEEP_CMD)
+	DBG("[%s] s\n",__func__);
+	
+	if (host->caps2 & MMC_CAP2_NO_SLEEP_CMD) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
 	mmc_bus_get(host);
 
@@ -2214,7 +2572,8 @@ int mmc_card_awake(struct mmc_host *host)
 		err = host->bus_ops->awake(host);
 
 	mmc_bus_put(host);
-
+	
+	DBG("[%s] e2\n",__func__);
 	return err;
 }
 EXPORT_SYMBOL(mmc_card_awake);
@@ -2223,8 +2582,12 @@ int mmc_card_sleep(struct mmc_host *host)
 {
 	int err = -ENOSYS;
 
-	if (host->caps2 & MMC_CAP2_NO_SLEEP_CMD)
+	DBG("[%s] s\n",__func__);
+	
+	if (host->caps2 & MMC_CAP2_NO_SLEEP_CMD) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
 	mmc_bus_get(host);
 
@@ -2233,6 +2596,7 @@ int mmc_card_sleep(struct mmc_host *host)
 
 	mmc_bus_put(host);
 
+	DBG("[%s] e2\n",__func__);
 	return err;
 }
 EXPORT_SYMBOL(mmc_card_sleep);
@@ -2241,8 +2605,13 @@ int mmc_card_can_sleep(struct mmc_host *host)
 {
 	struct mmc_card *card = host->card;
 
-	if (card && mmc_card_mmc(card) && card->ext_csd.rev >= 3)
+	DBG("[%s] s\n",__func__);
+	if (card && mmc_card_mmc(card) && card->ext_csd.rev >= 3) {
+		DBG("[%s] e1\n",__func__);
 		return 1;
+	}
+	
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 EXPORT_SYMBOL(mmc_card_can_sleep);
@@ -2254,9 +2623,12 @@ int mmc_flush_cache(struct mmc_card *card)
 {
 	struct mmc_host *host = card->host;
 	int err = 0;
+	DBG("[%s] s\n",__func__);
 
-	if (!(host->caps2 & MMC_CAP2_CACHE_CTRL))
+	if (!(host->caps2 & MMC_CAP2_CACHE_CTRL)) {
+		DBG("[%s] e1\n",__func__);
 		return err;
+	}
 
 	if (mmc_card_mmc(card) &&
 			(card->ext_csd.cache_size > 0) &&
@@ -2267,7 +2639,7 @@ int mmc_flush_cache(struct mmc_card *card)
 			pr_err("%s: cache flush error %d\n",
 					mmc_hostname(card->host), err);
 	}
-
+	DBG("[%s] e2\n",__func__);
 	return err;
 }
 EXPORT_SYMBOL(mmc_flush_cache);
@@ -2282,10 +2654,14 @@ int mmc_cache_ctrl(struct mmc_host *host, u8 enable)
 	struct mmc_card *card = host->card;
 	unsigned int timeout;
 	int err = 0;
+	
+	DBG("[%s] s\n",__func__);
 
 	if (!(host->caps2 & MMC_CAP2_CACHE_CTRL) ||
-			mmc_card_is_removable(host))
+			mmc_card_is_removable(host)) {
+		DBG("[%s] e1\n",__func__);
 		return err;
+	}
 
 	mmc_claim_host(host);
 	if (card && mmc_card_mmc(card) &&
@@ -2306,7 +2682,7 @@ int mmc_cache_ctrl(struct mmc_host *host, u8 enable)
 		}
 	}
 	mmc_release_host(host);
-
+	DBG("[%s] e2\n",__func__);
 	return err;
 }
 EXPORT_SYMBOL(mmc_cache_ctrl);
@@ -2321,8 +2697,12 @@ int mmc_suspend_host(struct mmc_host *host)
 {
 	int err = 0;
 
-	if (mmc_bus_needs_resume(host))
+	DBG("[%s] s\n",__func__);
+	
+	if (mmc_bus_needs_resume(host)) {
+		DBG("[%s] e1\n",__func__);
 		return 0;
+	}
 
 	if (cancel_delayed_work(&host->detect))
 		wake_unlock(&host->detect_wake_lock);
@@ -2361,6 +2741,7 @@ int mmc_suspend_host(struct mmc_host *host)
 		mmc_power_off(host);
 
 out:
+	DBG("[%s] e2\n",__func__);
 	return err;
 }
 
@@ -2374,10 +2755,13 @@ int mmc_resume_host(struct mmc_host *host)
 {
 	int err = 0;
 
+	DBG("[%s] s\n",__func__);
+
 	mmc_bus_get(host);
 	if (mmc_bus_manual_resume(host)) {
 		host->bus_resume_flags |= MMC_BUSRESUME_NEEDS_RESUME;
 		mmc_bus_put(host);
+		DBG("[%s] e1\n",__func__);
 		return 0;
 	}
 
@@ -2398,6 +2782,9 @@ int mmc_resume_host(struct mmc_host *host)
 				pm_runtime_enable(&host->card->dev);
 			}
 		}
+		//kevin add for suspend&resume
+		mmc_set_ios(host);
+
 		BUG_ON(!host->bus_ops->resume);
 		err = host->bus_ops->resume(host);
 		if (err) {
@@ -2409,7 +2796,7 @@ int mmc_resume_host(struct mmc_host *host)
 	}
 	host->pm_flags &= ~MMC_PM_KEEP_POWER;
 	mmc_bus_put(host);
-
+	DBG("[%s] e2\n",__func__);
 	return err;
 }
 EXPORT_SYMBOL(mmc_resume_host);
@@ -2425,6 +2812,7 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 		notify_block, struct mmc_host, pm_notify);
 	unsigned long flags;
 
+	DBG("[%s] s\n",__func__);
 
 	switch (mode) {
 	case PM_HIBERNATION_PREPARE:
@@ -2467,13 +2855,36 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 		host->rescan_disable = 0;
 		host->power_notify_type = MMC_HOST_PW_NOTIFY_LONG;
 		spin_unlock_irqrestore(&host->lock, flags);
-		mmc_detect_change(host, 0);
+		if(!(host->bus_dead))
+			mmc_detect_change(host, 0);
 
 	}
-
+	DBG("[%s] e\n",__func__);
 	return 0;
 }
 #endif
+
+void mmc_force_remove_card(struct mmc_host *host)
+{
+	DBG("[%s] s\n",__func__);
+	mmc_bus_get(host);
+
+	if (host->bus_ops && !host->bus_dead) {
+		
+		if (host->bus_ops->remove)
+			host->bus_ops->remove(host);
+		mmc_claim_host(host);
+		mmc_detach_bus(host);
+		mmc_release_host(host);
+			
+	}
+	mmc_bus_put(host);
+    mmc_power_off(host);
+	DBG("[%s] e\n",__func__);
+	return ;
+}
+EXPORT_SYMBOL(mmc_force_remove_card);
+
 
 #ifdef CONFIG_MMC_EMBEDDED_SDIO
 void mmc_set_embedded_sdio_data(struct mmc_host *host,
@@ -2482,10 +2893,12 @@ void mmc_set_embedded_sdio_data(struct mmc_host *host,
 				struct sdio_embedded_func *funcs,
 				int num_funcs)
 {
+	DBG("[%s] s\n",__func__);
 	host->embedded_sdio_data.cis = cis;
 	host->embedded_sdio_data.cccr = cccr;
 	host->embedded_sdio_data.funcs = funcs;
 	host->embedded_sdio_data.num_funcs = num_funcs;
+	DBG("[%s] e\n",__func__);
 }
 
 EXPORT_SYMBOL(mmc_set_embedded_sdio_data);
@@ -2495,9 +2908,13 @@ static int __init mmc_init(void)
 {
 	int ret;
 
+	DBG("[%s] s\n",__func__);
+
 	workqueue = alloc_ordered_workqueue("kmmcd", 0);
-	if (!workqueue)
+	if (!workqueue) {
+		DBG("[%s] e1\n",__func__);
 		return -ENOMEM;
+	}
 
 	ret = mmc_register_bus();
 	if (ret)
@@ -2511,6 +2928,7 @@ static int __init mmc_init(void)
 	if (ret)
 		goto unregister_host_class;
 
+	DBG("[%s] e2\n",__func__);
 	return 0;
 
 unregister_host_class:
@@ -2520,15 +2938,18 @@ unregister_bus:
 destroy_workqueue:
 	destroy_workqueue(workqueue);
 
+	DBG("[%s] e3\n",__func__);
 	return ret;
 }
 
 static void __exit mmc_exit(void)
 {
+	DBG("[%s] s\n",__func__);
 	sdio_unregister_bus();
 	mmc_unregister_host_class();
 	mmc_unregister_bus();
 	destroy_workqueue(workqueue);
+	DBG("[%s] e\n",__func__);
 }
 
 subsys_initcall(mmc_init);

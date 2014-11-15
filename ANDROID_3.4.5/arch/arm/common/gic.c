@@ -86,6 +86,8 @@ struct irq_chip gic_arch_extn = {
 #define MAX_GIC_NR	1
 #endif
 
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+
 static struct gic_chip_data gic_data[MAX_GIC_NR] __read_mostly;
 
 #ifdef CONFIG_GIC_NON_BANKED
@@ -332,6 +334,7 @@ static struct irq_chip gic_chip = {
 	.irq_set_affinity	= gic_set_affinity,
 #endif
 	.irq_set_wake		= gic_set_wake,
+	.irq_disable		= gic_mask_irq,
 };
 
 void __init gic_cascade_irq(unsigned int gic_nr, unsigned int irq)
@@ -363,12 +366,14 @@ static void __init gic_dist_init(struct gic_chip_data *gic)
 	for (i = 32; i < gic_irqs; i += 16)
 		writel_relaxed(0, base + GIC_DIST_CONFIG + i * 4 / 16);
 
+/* This code won't effect the Secure OS interrupt*/
+/*#ifndef CONFIG_OTZONE_AMP_SUPPORT */
 	/*
 	 * Set all global interrupts to this CPU only.
 	 */
 	for (i = 32; i < gic_irqs; i += 4)
 		writel_relaxed(cpumask, base + GIC_DIST_TARGET + i * 4 / 4);
-
+/*#endif */
 	/*
 	 * Set priority on all global interrupts.
 	 */
@@ -390,7 +395,14 @@ static void __cpuinit gic_cpu_init(struct gic_chip_data *gic)
 	void __iomem *dist_base = gic_data_dist_base(gic);
 	void __iomem *base = gic_data_cpu_base(gic);
 	int i;
+	unsigned int wmt_trustzone_enable = 0;
+	unsigned char buf[10];
+	int varlen=10;
 
+	if (wmt_getsyspara("wmt.secure.param",buf,&varlen) == 0)
+		sscanf(buf,"%d",&wmt_trustzone_enable);
+	if(wmt_trustzone_enable != 1)
+		wmt_trustzone_enable = 0;
 	/*
 	 * Deal with the banked PPI and SGI interrupts - disable all
 	 * PPI interrupts, ensure all SGI interrupts are enabled.
@@ -404,7 +416,10 @@ static void __cpuinit gic_cpu_init(struct gic_chip_data *gic)
 	for (i = 0; i < 32; i += 4)
 		writel_relaxed(0xa0a0a0a0, dist_base + GIC_DIST_PRI + i * 4 / 4);
 
-	writel_relaxed(0xf0, base + GIC_CPU_PRIMASK);
+	if (wmt_trustzone_enable != 1) {
+		writel_relaxed(0xf0, base + GIC_CPU_PRIMASK);
+	}
+	
 	writel_relaxed(1, base + GIC_CPU_CTRL);
 }
 
@@ -519,6 +534,16 @@ static void gic_cpu_restore(unsigned int gic_nr)
 	void __iomem *dist_base;
 	void __iomem *cpu_base;
 
+	unsigned int wmt_trustzone_enable = 0;
+	unsigned char buf[10];
+	int varlen=10;
+
+	if (wmt_getsyspara("wmt.secure.param",buf,&varlen) == 0)
+		sscanf(buf,"%d",&wmt_trustzone_enable);
+	if(wmt_trustzone_enable != 1)
+		wmt_trustzone_enable = 0;
+	
+
 	if (gic_nr >= MAX_GIC_NR)
 		BUG();
 
@@ -539,7 +564,10 @@ static void gic_cpu_restore(unsigned int gic_nr)
 	for (i = 0; i < DIV_ROUND_UP(32, 4); i++)
 		writel_relaxed(0xa0a0a0a0, dist_base + GIC_DIST_PRI + i * 4);
 
-	writel_relaxed(0xf0, cpu_base + GIC_CPU_PRIMASK);
+	if (wmt_trustzone_enable != 1) {
+		writel_relaxed(0xf0, cpu_base + GIC_CPU_PRIMASK);
+	}
+	
 	writel_relaxed(1, cpu_base + GIC_CPU_CTRL);
 }
 

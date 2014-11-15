@@ -149,7 +149,7 @@ void __init setup_sched_clock(u32 (*read)(void), int bits, unsigned long rate)
 	 * Start the timer to keep sched_clock() properly updated and
 	 * sets the initial epoch.
 	 */
-	sched_clock_timer.data = msecs_to_jiffies(w - (w / 10));
+	sched_clock_timer.data = msecs_to_jiffies((w - (w / 10))/2);
 	update_sched_clock();
 
 	/*

@@ -619,3 +619,28 @@ config MMC_USHC
 
 	  Note: These controllers only support SDIO cards and do not
 	  support MMC or SD memory cards.
+
+config MMC_ATSMB	
+	tristate "WonderMedia ATSMB(AHB To MMC/SD BUS)"	
+	help	  
+		This selects the WMT Secure digital and Multimedia card Interface.	  
+		If you have a machine with WonderMedia ATSMB, say Y or M here.	  	  
+
+		If unsure, say N.
+
+config MMC_ATSMB1	
+	tristate "WonderMedia ATSMB1(AHB To MMC/SD1 BUS)"	
+	help	  
+		This selects the WMT Secure digital and Multimedia card Interface.	  
+		If you have a machine with WonderMedia ATSMB1, say Y or M here.	  	  
+
+		If unsure, say N.		
+
+config MMC_ATSMB2	
+	tristate "WonderMedia ATSMB2(AHB To MMC/SD2 BUS)"	
+	help	  
+		This selects the WMT Secure digital and Multimedia card Interface.	  
+		If you have a machine with WonderMedia ATSMB2, say Y or M here.	  	  
+
+		If unsure, say N.
+

@@ -39,11 +39,12 @@
 
 static LIST_HEAD(blktrans_majors);
 static DEFINE_MUTEX(blktrans_ref_mutex);
+struct mutex wmt_lock;
 
 static void blktrans_dev_release(struct kref *kref)
 {
 	struct mtd_blktrans_dev *dev =
-		container_of(kref, struct mtd_blktrans_dev, ref);
+	    container_of(kref, struct mtd_blktrans_dev, ref);
 
 	dev->disk->private_data = NULL;
 	blk_cleanup_queue(dev->rq);
@@ -74,16 +75,28 @@ static void blktrans_dev_put(struct mtd_blktrans_dev *dev)
 	mutex_unlock(&blktrans_ref_mutex);
 }
 
-
 static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 			       struct mtd_blktrans_dev *dev,
 			       struct request *req)
 {
 	unsigned long block, nsect;
 	char *buf;
+#if 0/*original: for use mtdblock */
+	int blkshift = tr->blkshift;
+	int blksize = tr->blksize;
+#else/*4K : for use mtdswap */
+	int blkshift = 12;
+	int blksize = 1<<12;
 
-	block = blk_rq_pos(req) << 9 >> tr->blkshift;
-	nsect = blk_rq_cur_bytes(req) >> tr->blkshift;
+
+	if(dev->mtd->writesize < blksize) {
+		blkshift = tr->blkshift;
+		blksize = tr->blksize;
+	}
+
+#endif
+	block = blk_rq_pos(req) << 9 >> blkshift;
+	nsect = blk_rq_cur_bytes(req) >> blkshift;
 
 	buf = req->buffer;
 
@@ -97,9 +110,9 @@ static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 	if (req->cmd_flags & REQ_DISCARD)
 		return tr->discard(dev, block, nsect);
 
-	switch(rq_data_dir(req)) {
+	switch (rq_data_dir(req)) {
 	case READ:
-		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
+		for (; nsect > 0; nsect--, block++, buf += blksize) /*tr->blksize*/
 			if (tr->readsect(dev, block, buf))
 				return -EIO;
 		rq_flush_dcache_pages(req);
@@ -109,7 +122,7 @@ static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 			return -EIO;
 
 		rq_flush_dcache_pages(req);
-		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
+		for (; nsect > 0; nsect--, block++, buf += blksize) /*tr->blksize*/
 			if (tr->writesect(dev, block, buf))
 				return -EIO;
 		return 0;
@@ -126,6 +139,7 @@ int mtd_blktrans_cease_background(struct mtd_blktrans_dev *dev)
 
 	return dev->bg_stop;
 }
+
 EXPORT_SYMBOL_GPL(mtd_blktrans_cease_background);
 
 static int mtd_blktrans_thread(void *arg)
@@ -136,6 +150,7 @@ static int mtd_blktrans_thread(void *arg)
 	struct request *req = NULL;
 	int background_done = 0;
 
+	mutex_lock(&wmt_lock);
 	spin_lock_irq(rq->queue_lock);
 
 	while (!kthread_should_stop()) {
@@ -160,10 +175,11 @@ static int mtd_blktrans_thread(void *arg)
 
 			if (kthread_should_stop())
 				set_current_state(TASK_RUNNING);
-
+			mutex_unlock(&wmt_lock);
 			spin_unlock_irq(rq->queue_lock);
 			schedule();
 			spin_lock_irq(rq->queue_lock);
+			mutex_lock(&wmt_lock);
 			continue;
 		}
 
@@ -185,7 +201,7 @@ static int mtd_blktrans_thread(void *arg)
 		__blk_end_request_all(req, -EIO);
 
 	spin_unlock_irq(rq->queue_lock);
-
+	mutex_unlock(&wmt_lock);
 	return 0;
 }
 
@@ -211,7 +227,7 @@ static int blktrans_open(struct block_device *bdev, fmode_t mode)
 	int ret = 0;
 
 	if (!dev)
-		return -ERESTARTSYS; /* FIXME: busy loop! -arnd*/
+		return -ERESTARTSYS;	/* FIXME: busy loop! -arnd */
 
 	mutex_lock(&dev->lock);
 
@@ -299,7 +315,7 @@ unlock:
 }
 
 static int blktrans_ioctl(struct block_device *bdev, fmode_t mode,
-			      unsigned int cmd, unsigned long arg)
+			  unsigned int cmd, unsigned long arg)
 {
 	struct mtd_blktrans_dev *dev = blktrans_dev_get(bdev->bd_disk);
 	int ret = -ENXIO;
@@ -326,11 +342,11 @@ unlock:
 }
 
 static const struct block_device_operations mtd_blktrans_ops = {
-	.owner		= THIS_MODULE,
-	.open		= blktrans_open,
-	.release	= blktrans_release,
-	.ioctl		= blktrans_ioctl,
-	.getgeo		= blktrans_getgeo,
+	.owner = THIS_MODULE,
+	.open = blktrans_open,
+	.release = blktrans_release,
+	.ioctl = blktrans_ioctl,
+	.getgeo = blktrans_getgeo,
 };
 
 int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
@@ -350,9 +366,9 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	list_for_each_entry(d, &tr->devs, list) {
 		if (new->devnum == -1) {
 			/* Use first free number */
-			if (d->devnum != last_devnum+1) {
+			if (d->devnum != last_devnum + 1) {
 				/* Found a free devnum. Plug it in here */
-				new->devnum = last_devnum+1;
+				new->devnum = last_devnum + 1;
 				list_add_tail(&new->list, &d->list);
 				goto added;
 			}
@@ -370,7 +386,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 
 	ret = -EBUSY;
 	if (new->devnum == -1)
-		new->devnum = last_devnum+1;
+		new->devnum = last_devnum + 1;
 
 	/* Check that the device and any partitions will get valid
 	 * minor numbers and that the disk naming code below can cope
@@ -382,7 +398,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	}
 
 	list_add_tail(&new->list, &tr->devs);
- added:
+added:
 	mutex_unlock(&blktrans_ref_mutex);
 
 	mutex_init(&new->lock);
@@ -417,6 +433,8 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 			 "%s%d", tr->name, new->devnum);
 
 	set_capacity(gd, (new->size * tr->blksize) >> 9);
+	
+	mutex_init(&wmt_lock);
 
 	/* Create the request queue */
 	spin_lock_init(&new->queue_lock);
@@ -424,6 +442,10 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 
 	if (!new->rq)
 		goto error3;
+
+	elevator_exit(new->rq->elevator);
+	new->rq->elevator = NULL;
+	elevator_init(new->rq, "noop");
 
 	new->rq->queuedata = new;
 	blk_queue_logical_block_size(new->rq, tr->blksize);
@@ -440,7 +462,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	/* Create processing thread */
 	/* TODO: workqueue ? */
 	new->thread = kthread_run(mtd_blktrans_thread, new,
-			"%s%d", tr->name, new->mtd->index);
+				  "%s%d", tr->name, new->mtd->index);
 	if (IS_ERR(new->thread)) {
 		ret = PTR_ERR(new->thread);
 		goto error4;
@@ -454,7 +476,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 
 	if (new->disk_attributes) {
 		ret = sysfs_create_group(&disk_to_dev(gd)->kobj,
-					new->disk_attributes);
+					 new->disk_attributes);
 		WARN_ON(ret);
 	}
 	return 0;
@@ -479,11 +501,10 @@ int del_mtd_blktrans_dev(struct mtd_blktrans_dev *old)
 
 	if (old->disk_attributes)
 		sysfs_remove_group(&disk_to_dev(old->disk)->kobj,
-						old->disk_attributes);
+				   old->disk_attributes);
 
 	/* Stop new requests to arrive */
 	del_gendisk(old->disk);
-
 
 	/* Stop the thread */
 	kthread_stop(old->thread);
@@ -495,7 +516,7 @@ int del_mtd_blktrans_dev(struct mtd_blktrans_dev *old)
 	spin_unlock_irqrestore(&old->queue_lock, flags);
 
 	/* If the device is currently open, tell trans driver to close it,
-		then put mtd device, and don't touch it again */
+	   then put mtd device, and don't touch it again */
 	mutex_lock(&old->lock);
 	if (old->open) {
 		if (old->tr->release)
@@ -516,9 +537,9 @@ static void blktrans_notify_remove(struct mtd_info *mtd)
 	struct mtd_blktrans_dev *dev, *next;
 
 	list_for_each_entry(tr, &blktrans_majors, list)
-		list_for_each_entry_safe(dev, next, &tr->devs, list)
-			if (dev->mtd == mtd)
-				tr->remove_dev(dev);
+	    list_for_each_entry_safe(dev, next, &tr->devs, list)
+	    if (dev->mtd == mtd)
+		tr->remove_dev(dev);
 }
 
 static void blktrans_notify_add(struct mtd_info *mtd)
@@ -529,7 +550,7 @@ static void blktrans_notify_add(struct mtd_info *mtd)
 		return;
 
 	list_for_each_entry(tr, &blktrans_majors, list)
-		tr->add_mtd(tr, mtd);
+	    tr->add_mtd(tr, mtd);
 }
 
 static struct mtd_notifier blktrans_notifier = {
@@ -548,12 +569,12 @@ int register_mtd_blktrans(struct mtd_blktrans_ops *tr)
 	if (!blktrans_notifier.list.next)
 		register_mtd_user(&blktrans_notifier);
 
-
 	mutex_lock(&mtd_table_mutex);
 
 	ret = register_blkdev(tr->major, tr->name);
 	if (ret < 0) {
-		printk(KERN_WARNING "Unable to register %s block device on major %d: %d\n",
+		printk(KERN_WARNING
+		       "Unable to register %s block device on major %d: %d\n",
 		       tr->name, tr->major, ret);
 		mutex_unlock(&mtd_table_mutex);
 		return ret;
@@ -568,8 +589,8 @@ int register_mtd_blktrans(struct mtd_blktrans_ops *tr)
 	list_add(&tr->list, &blktrans_majors);
 
 	mtd_for_each_device(mtd)
-		if (mtd->type != MTD_ABSENT)
-			tr->add_mtd(tr, mtd);
+	    if (mtd->type != MTD_ABSENT)
+		tr->add_mtd(tr, mtd);
 
 	mutex_unlock(&mtd_table_mutex);
 	return 0;
@@ -585,7 +606,7 @@ int deregister_mtd_blktrans(struct mtd_blktrans_ops *tr)
 	list_del(&tr->list);
 
 	list_for_each_entry_safe(dev, next, &tr->devs, list)
-		tr->remove_dev(dev);
+	    tr->remove_dev(dev);
 
 	unregister_blkdev(tr->major, tr->name);
 	mutex_unlock(&mtd_table_mutex);
@@ -611,4 +632,5 @@ EXPORT_SYMBOL_GPL(del_mtd_blktrans_dev);
 
 MODULE_AUTHOR("David Woodhouse <dwmw2@infradead.org>");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Common interface to block layer for MTD 'translation layers'");
+MODULE_DESCRIPTION
+    ("Common interface to block layer for MTD 'translation layers'");

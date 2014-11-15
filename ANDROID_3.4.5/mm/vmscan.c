@@ -154,6 +154,7 @@ struct mem_cgroup_zone {
 /*
  * From 0 .. 100.  Higher means more swappy.
  */
+int wmt_swap = 1;
 int vm_swappiness = 60;
 long vm_total_pages;	/* The total number of pages which the VM controls */
 
@@ -2483,7 +2484,7 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 		.may_writepage = !laptop_mode,
 		.nr_to_reclaim = SWAP_CLUSTER_MAX,
 		.may_unmap = 1,
-		.may_swap = 1,
+		.may_swap = wmt_swap,	/*disable may_swap to avoid kernel panic during std */
 		.order = order,
 		.target_mem_cgroup = NULL,
 		.nodemask = nodemask,
@@ -2491,7 +2492,6 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 	struct shrink_control shrink = {
 		.gfp_mask = sc.gfp_mask,
 	};
-
 	trace_mm_vmscan_direct_reclaim_begin(order,
 				sc.may_writepage,
 				gfp_mask);
@@ -2725,7 +2725,7 @@ static unsigned long balance_pgdat(pg_data_t *pgdat, int order,
 	struct scan_control sc = {
 		.gfp_mask = GFP_KERNEL,
 		.may_unmap = 1,
-		.may_swap = 1,
+		.may_swap = wmt_swap,	/*disable may_swap to avoid kernel panic during std */
 		/*
 		 * kswapd doesn't want to be bailed out while reclaim. because
 		 * we want to put equal scanning pressure on each zone.
@@ -3246,7 +3246,7 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 	struct reclaim_state reclaim_state;
 	struct scan_control sc = {
 		.gfp_mask = GFP_HIGHUSER_MOVABLE,
-		.may_swap = 1,
+		.may_swap = wmt_swap,	/*disable may_swap to avoid kernel panic during std */
 		.may_unmap = 1,
 		.may_writepage = 1,
 		.nr_to_reclaim = nr_to_reclaim,
@@ -3259,6 +3259,7 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 	struct zonelist *zonelist = node_zonelist(numa_node_id(), sc.gfp_mask);
 	struct task_struct *p = current;
 	unsigned long nr_reclaimed;
+
 
 	p->flags |= PF_MEMALLOC;
 	lockdep_set_current_reclaim_state(sc.gfp_mask);

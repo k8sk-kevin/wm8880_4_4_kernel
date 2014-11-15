@@ -8,6 +8,7 @@
  *
  */
 
+#include <linux/module.h>
 #include <linux/export.h>
 #include <linux/kobject.h>
 #include <linux/string.h>
@@ -15,7 +16,7 @@
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
-
+#include <linux/reboot.h>
 #include "power.h"
 
 DEFINE_MUTEX(pm_mutex);
@@ -269,6 +270,50 @@ static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return (s - buf);
 }
 
+static int run_pre_suspend(void)
+{
+	int ret;
+	char *argv[] = { "/system/etc/wmt/pm.sh", "", NULL };
+	char *envp[] =
+		{ "HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", "ACTION=pre_suspend", NULL };
+
+	ret = call_usermodehelper(argv[0], argv, envp, 1);
+	return ret;
+}
+
+static int run_post_resume(void)
+{
+	int ret;
+	char *argv[] = { "/system/etc/wmt/pm.sh", "", NULL };
+	char *envp[] =
+		{ "HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", "ACTION=post_resume", NULL };
+
+	ret = call_usermodehelper(argv[0], argv, envp, 1);
+	return ret;
+}
+
+static int run_hibernate_stress_ramdisk(void)
+{
+	int ret;
+	char *argv[] = { "/etc/wmt/scripts/std_stress_test.sh", "", NULL };
+	char *envp[] =
+	{ "HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", "", NULL };
+
+	ret = call_usermodehelper(argv[0], argv, envp, 1);
+	return ret;
+}
+
+static int run_hibernate_stress_android(void)
+{
+	int ret;
+	char *argv[] = { "/system/etc/wmt/script/std_stress_test.sh", "", NULL };
+	char *envp[] =
+	{ "HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", "", NULL };
+
+	ret = call_usermodehelper(argv[0], argv, envp, 1);
+	return ret;
+}
+
 static suspend_state_t decode_state(const char *buf, size_t n)
 {
 #ifdef CONFIG_SUSPEND
@@ -294,12 +339,18 @@ static suspend_state_t decode_state(const char *buf, size_t n)
 	return PM_SUSPEND_ON;
 }
 
+int std_stress_test;//std_stress_test = wmt.std.stress
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+
 static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 			   const char *buf, size_t n)
 {
 	suspend_state_t state;
 	int error;
-
+	int ret = 0;
+	unsigned char buf_env[80];//for std_stress
+	int varlen = sizeof(buf_env);//for std_stress
+	static int retry = STD_RETRY_TIMES;
 	error = pm_autosleep_lock();
 	if (error)
 		return error;
@@ -310,8 +361,14 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 	}
 
 	state = decode_state(buf, n);
-	if (state < PM_SUSPEND_MAX)
+	if (state < PM_SUSPEND_MAX) {
+		if (state == PM_SUSPEND_MEM){
+			run_pre_suspend();
+		} else if(state == PM_SUSPEND_ON) {
+			run_post_resume();
+		}
 		error = pm_suspend(state);
+	}
 	else if (state == PM_SUSPEND_MAX)
 		error = hibernate();
 	else
@@ -319,6 +376,38 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 
  out:
 	pm_autosleep_unlock();
+	if( state == PM_SUSPEND_MAX && error 
+		&& error!=-STD_USER_ABORT 
+	){
+		printk(KERN_CRIT "\nHibernate Failed.\n");		
+		if(retry > 0)
+			ret = run_hibernate_stress_android();
+		printk(KERN_CRIT"run script : ret=%d\n", ret);
+		if(ret || !retry){
+			printk(KERN_CRIT "\n Hibernation Failed. Power OFF.\n");
+			kernel_power_off();
+		}
+		retry--;	
+	}
+	
+	if(!error && state == PM_SUSPEND_MAX){
+		retry = STD_RETRY_TIMES; /*Reset retry times after STD Restore.*/
+		
+		/*hibernation stress test */
+		std_stress_test = 0;
+		ret = wmt_getsyspara("wmt.std.stress", buf_env, &varlen);
+		if (ret == 0)
+			sscanf(buf_env, "%d", &std_stress_test);
+		if(std_stress_test) {
+			printk(KERN_CRIT "\n Runing STD Stress Test \n");
+			ret = run_hibernate_stress_ramdisk();//if success, ret=0.
+			if(ret){//fail.
+				printk(KERN_CRIT "\n Under Android.\n");
+				run_hibernate_stress_android();
+			}
+		}
+	}
+
 	return error ? error : n;
 }
 

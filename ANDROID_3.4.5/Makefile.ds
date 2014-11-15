@@ -1,0 +1,45 @@
+# Build Linux Kernel
+PROCESSING_ROOT			=..
+KERNEL_ID				=Kernel_3.4.5_WM8880
+KERNEL_NAME				=ANDROID_3.4.5
+KERNEL_CONFIG_NAME		=Android
+MAKE_J				=-j4
+MAJOR_CORE_NAME			=WM8880
+MINOR_CORE_NAME			=
+CORENAME_DATETIME		=$(MAJOR_CORE_NAME).`date +%y%m%d.%H%M`
+CROSS_COMPILE			=arm_1103_le-
+
+###### Build BSP usage
+DST_ROOT			=$(PROCESSING_ROOT)/$(KERNEL_NAME)-DS
+DST_SRC				=$(DST_ROOT)/$(KERNEL_NAME)
+
+kernel-ds:
+	@echo -e "\033[1;31m====== Build Linux Kernel for $@ ======\033[0m"
+	rm $(DST_ROOT) -rf
+	mkdir -p $(DST_SRC)
+	cp . $(DST_SRC)/ -arf
+	mv $(DST_SRC)/Makefile.$(KERNEL_ID)-DS $(DST_ROOT)/Makefile
+	make -f Makefile.$(KERNEL_ID) create_driver_obj_folder	
+	make -f Makefile.$(KERNEL_ID) remove_driver_src
+	make -f Makefile.$(KERNEL_ID) cp_objs_to_kernel_bsp
+
+### verification
+	find $(DST_ROOT)  -name "built-in.o" -exec rm -rf {} \;
+	find $(DST_SRC)  -name ".*.o.cmd" -exec rm -rf {} \;
+	@echo -e "\033[0m"
+	make -C $(DST_ROOT) clean CROSS_COMPILE=$(CROSS_COMPILE)
+	make -C $(DST_SRC) $(KERNEL_CONFIG_NAME)_defconfig
+	make -C $(DST_ROOT) ubin CROSS_COMPILE=$(CROSS_COMPILE) $(MAKE_J)
+	make -C $(DST_ROOT) modules CROSS_COMPILE=$(CROSS_COMPILE) $(MAKE_J)
+
+	cd $(DST_ROOT) && make clean && cd -
+	rm -rf $(DST_SRC)/Makefile.$(KERNEL_ID)
+	mv $(DST_SRC)/modules_release_bsp.sh $(DST_SRC)/modules_release.sh	
+	rm -rf $(DST_ROOT)/.module
+	./check_svn.sh $(DST_SRC)
+	find $(DST_SRC) -name .svn | xargs rm -rf
+	rm -f $(DST_SRC)/check_svn.sh
+	rm -rf $(PROCESSING_ROOT)/KERNEL-DS_$(KERNEL_NAME)_*.tgz
+	tar zcf $(PROCESSING_ROOT)/KERNEL-DS_$(KERNEL_NAME)_$(CORENAME_DATETIME).tgz -C $(PROCESSING_ROOT)/ $(KERNEL_NAME)-DS
+	@echo -e "\033[1;32m====== Build Linux Kernel for $@ Done ======\033[0m"
+

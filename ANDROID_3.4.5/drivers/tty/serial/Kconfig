@@ -404,6 +404,72 @@ config SERIAL_SA1100_CONSOLE
 	  "console=ttySA0". (Try "man bootparam" or see the documentation of
 	  your boot loader (lilo or loadlin) about how to pass options to the
 	  kernel at boot time.)
+	  
+config SERIAL_WMT
+    bool "WMT serial port support"
+    depends on ARM && ARCH_WMT
+    select SERIAL_CORE
+    ---help---
+      Enable onboard serial port by enabling this option.
+      
+config SERIAL_WMT_CONSOLE
+    bool "Console on WMT serial port"
+    depends on SERIAL_WMT
+    select SERIAL_CORE_CONSOLE
+    ---help---
+      Make UART to be the console by answering Y to this option.
+
+      Even if you say Y here, the currently visible virtual console
+      (/dev/tty0) will still be used as the system console by default, but
+      you can alter that using a kernel command line option such as
+      "console=ttyS0" or "console=ttyVT0". (Try "man bootparam" or see
+      the documentation of your boot loader (lilo or loadlin) about how to
+      pass options to the kernel at boot time.)      
+
+config SERIAL_WMT_TTYVT
+    bool "ttyVT on WMT serial port"
+    depends on SERIAL_WMT
+    ---help---
+      Make UARTs to be mounted on ttyVT devices.
+
+      If you say Y here, make sure there are ttyVT devices on your root filesystem.
+      If you say N here, UARTs will mount on ttyS devices.
+      Choose N here unless you really need to mount UART on ttyVT devices.
+
+config SERIAL_WMT_BKSIG
+    bool "Break signal software detection"
+    depends on SERIAL_WMT
+    ---help---
+      Since WMT UART has no break signal detection interrupt.
+
+      If you say Y here, driver will detect break signal by software.
+      If you say N here, driver will not support break signal detection.
+      Choose N here unless you really need to detect break signal.
+
+config SERIAL_WMT_DMA
+    bool "DMA mode on WMT serial port"
+    depends on SERIAL_WMT
+    ---help---
+      Since WMT UART support DMA mode transfer.
+
+      If you say Y here, driver will select DMA mode transfer.
+
+      If you say N here, driver will not support DMA mode transfer.
+
+      Choose N here unless you really need to use DMA mode transfer.
+      
+config UART_2_3_ENABLE
+    bool "UART_2_3 support"
+    depends on SERIAL_WMT
+    ---help---
+      Since WMT UART support UART2 and UART3.
+
+      If you say Y here, driver will select dual dma transfer.
+
+      If you say N here, driver will not support dual dma transfer.
+
+      Choose N here unless you really need to use dual dma transfer.
+
 
 config SERIAL_MRST_MAX3110
 	tristate "SPI UART driver for Max3110"

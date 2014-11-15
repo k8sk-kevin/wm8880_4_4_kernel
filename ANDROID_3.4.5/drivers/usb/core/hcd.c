@@ -2384,6 +2384,8 @@ static int usb_hcd_request_irqs(struct usb_hcd *hcd,
  * buffers of consistent memory, register the bus, request the IRQ line,
  * and call the driver's reset() and start() routines.
  */
+extern char enable_ehci_wake; 
+ 
 int usb_add_hcd(struct usb_hcd *hcd,
 		unsigned int irqnum, unsigned long irqflags)
 {
@@ -2437,7 +2439,11 @@ int usb_add_hcd(struct usb_hcd *hcd,
 	 * but drivers can override it in reset() if needed, along with
 	 * recording the overall controller's system wakeup capability.
 	 */
-	device_set_wakeup_capable(&rhdev->dev, 1);
+	if (enable_ehci_wake) {
+		device_init_wakeup(&rhdev->dev, 1);
+	}
+
+	//device_set_wakeup_capable(&rhdev->dev, 1);
 
 	/* HCD_FLAG_RH_RUNNING doesn't matter until the root hub is
 	 * registered.  But since the controller can die at any time,
@@ -2494,7 +2500,11 @@ int usb_add_hcd(struct usb_hcd *hcd,
 	 * they only forward requests from the root hub.  Therefore
 	 * controllers should always be enabled for remote wakeup.
 	 */
-	device_wakeup_enable(hcd->self.controller);
+
+	if (enable_ehci_wake) {
+		device_wakeup_enable(hcd->self.controller);
+	}
+		
 	return retval;
 
 error_create_attr_group:

@@ -1,0 +1,23 @@
+#
+# ISDBT config states
+#
+
+config ISDBT_RAONTECH_MTV
+	tristate "RAONTECH based MTV receiver"
+	depends on	WMT_SPISLAVE1_SUPPORT
+	help
+	  This allows ISDBT.
+	  This module is designed for SPI or TSIF.
+	  Select chipset and interface
+
+menu "Raotech module components"
+
+choice
+	depends on ISDBT_RAONTECH_MTV && WMT_SPISLAVE1_SUPPORT
+	prompt "chip"
+	default ISDBT_MTV23x
+	config ISDBT_MTV23x
+		bool "MTV23x"
+endchoice
+
+endmenu

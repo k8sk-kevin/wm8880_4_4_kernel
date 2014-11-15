@@ -728,6 +728,15 @@ config RTC_DRV_NUC900
 
 comment "on-CPU RTC drivers"
 
+config RTC_WMT
+	tristate "WonderMedia Real Time Clock Support"
+	depends on ARCH_WMT
+	---help---
+	  Say Y here if you want to enable Real Time Clock
+
+          To compile this driver as a module, choose M here: the
+	  module will be called WMT SOC
+
 config RTC_DRV_DAVINCI
 	tristate "TI DaVinci RTC"
 	depends on ARCH_DAVINCI_DM365

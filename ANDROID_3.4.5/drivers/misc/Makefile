@@ -52,3 +52,11 @@ obj-$(CONFIG_ALTERA_STAPL)	+=altera-stapl/
 obj-$(CONFIG_MAX8997_MUIC)	+= max8997-muic.o
 obj-$(CONFIG_WL127X_RFKILL)	+= wl127x-rfkill.o
 obj-$(CONFIG_SENSORS_AK8975)	+= akm8975.o
+obj-y 			+= rsa/
+obj-y	+= viatel/
+obj-y	+= mediatek/
+wmt_pn547-objs += pn547.o 
+obj-$(CONFIG_PN547_NFC)		+= wmt_pn547.o
+
+s_wmt_nfc_bcm2079x-objs += bcm2079x-i2c.o
+obj-$(CONFIG_BCM2079X_NFC)		+= s_wmt_nfc_bcm2079x.o

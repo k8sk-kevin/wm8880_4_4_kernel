@@ -6551,4 +6551,4 @@ static int __init initialize_hashrnd(void)
 }
 
 late_initcall_sync(initialize_hashrnd);
-
+EXPORT_SYMBOL(dev_change_name);

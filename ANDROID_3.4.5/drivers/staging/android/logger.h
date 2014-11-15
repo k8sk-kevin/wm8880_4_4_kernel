@@ -47,13 +47,14 @@ struct logger_entry {
 	__s32		tid;		/* generating process's tid */
 	__s32		sec;		/* seconds since Epoch */
 	__s32		nsec;		/* nanoseconds */
+	__s32       thread_msec;/*thread time ,add by jay*/
 	uid_t		euid;		/* effective UID of logger */
 	char		msg[0];		/* the entry's payload */
 };
 
 #define LOGGER_LOG_RADIO	"log_radio"	/* radio-related messages */
 #define LOGGER_LOG_EVENTS	"log_events"	/* system/hardware events */
-#define LOGGER_LOG_SYSTEM	"log_system"	/* system/framework messages */
+//#define LOGGER_LOG_SYSTEM	"log_system"	/* system/framework messages */
 #define LOGGER_LOG_MAIN		"log_main"	/* everything else */
 
 #define LOGGER_ENTRY_MAX_PAYLOAD	4076

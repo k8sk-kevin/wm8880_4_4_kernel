@@ -410,6 +410,7 @@ static int mtp_create_bulk_endpoints(struct mtp_dev *dev,
 	ep->driver_data = dev;		/* claim the endpoint */
 	dev->ep_out = ep;
 
+#if 0
 	ep = usb_ep_autoconfig(cdev->gadget, out_desc);
 	if (!ep) {
 		DBG(cdev, "usb_ep_autoconfig for ep_out failed\n");
@@ -418,6 +419,7 @@ static int mtp_create_bulk_endpoints(struct mtp_dev *dev,
 	DBG(cdev, "usb_ep_autoconfig for mtp ep_out got %s\n", ep->name);
 	ep->driver_data = dev;		/* claim the endpoint */
 	dev->ep_out = ep;
+#endif
 
 	ep = usb_ep_autoconfig(cdev->gadget, intr_desc);
 	if (!ep) {
@@ -478,6 +480,10 @@ static ssize_t mtp_read(struct file *fp, char __user *buf,
 		dev->state != STATE_OFFLINE);
 	if (ret < 0) {
 		r = ret;
+		if (r == -ERESTARTSYS){
+			r = -EIO;
+		}
+		
 		goto done;
 	}
 	spin_lock_irq(&dev->lock);
@@ -506,7 +512,11 @@ requeue_req:
 	/* wait for a request to complete */
 	ret = wait_event_interruptible(dev->read_wq, dev->rx_done);
 	if (ret < 0) {
-		r = ret;
+		r = ret;		
+		if (r == -ERESTARTSYS){
+			r = -EIO;
+		}
+			
 		usb_ep_dequeue(dev->ep_out, req);
 		goto done;
 	}
@@ -1121,7 +1131,8 @@ mtp_function_unbind(struct usb_configuration *c, struct usb_function *f)
 	struct mtp_dev	*dev = func_to_mtp(f);
 	struct usb_request *req;
 	int i;
-
+	extern void wmt_cleanup_done_thread(int number);
+	wmt_cleanup_done_thread(1);
 	while ((req = mtp_req_get(dev, &dev->tx_idle)))
 		mtp_request_free(req, dev->ep_in);
 	for (i = 0; i < RX_REQ_MAX; i++)
@@ -1175,21 +1186,22 @@ static int mtp_function_set_alt(struct usb_function *f,
 	return 0;
 }
 
+
 static void mtp_function_disable(struct usb_function *f)
 {
 	struct mtp_dev	*dev = func_to_mtp(f);
 	struct usb_composite_dev	*cdev = dev->cdev;
 
-	DBG(cdev, "mtp_function_disable\n");
+	printk("mtp_function_disable\n");
 	dev->state = STATE_OFFLINE;
 	usb_ep_disable(dev->ep_in);
 	usb_ep_disable(dev->ep_out);
 	usb_ep_disable(dev->ep_intr);
-
+//	wmt_cleanup_done_thread(1);
 	/* readers may be blocked waiting for us to go online */
 	wake_up(&dev->read_wq);
 
-	VDBG(cdev, "%s disabled\n", dev->function.name);
+	printk("%s disabled\n", dev->function.name);
 }
 
 static int mtp_bind_config(struct usb_configuration *c, bool ptp_config)

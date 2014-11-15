@@ -1269,6 +1269,10 @@ static int usb_resume_both(struct usb_device *udev, pm_message_t msg)
 
  done:
 	dev_vdbg(&udev->dev, "%s: status %d\n", __func__, status);
+	if (!(&udev->dev))
+	      printk("(NULL device *): %s: status %d\n", __func__, status);
+	else
+	      printk("%s%s : %s: status %d\n",dev_driver_string(&udev->dev), dev_name(&udev->dev), __func__, status);	  
 	if (!status)
 		udev->reset_resume = 0;
 	return status;

@@ -31,6 +31,7 @@
 
 #define MTD_CHAR_MAJOR 90
 #define MTD_BLOCK_MAJOR 31
+#define MAX_MTD_DEVICES 32
 
 #define MTD_ERASE_PENDING	0x01
 #define MTD_ERASING		0x02
@@ -146,6 +147,11 @@ struct mtd_info {
 
 	uint32_t oobsize;   // Amount of OOB data per block (e.g. 16)
 	uint32_t oobavail;  // Available OOB bytes per block
+	
+	uint32_t realerasesize;	//dan_multi add for multi plane access
+	uint32_t realwritesize;
+	uint32_t realoobsize;
+	int planenum;
 
 	/*
 	 * If erasesize is a power of 2 then the shift is stored in
@@ -193,10 +199,13 @@ struct mtd_info {
 			     size_t *retlen, const u_char *buf);
 	int (*_read_oob) (struct mtd_info *mtd, loff_t from,
 			  struct mtd_oob_ops *ops);
+	int (*read_bbinfo_facmk) (struct mtd_info *mtd, loff_t from,
+                         struct mtd_oob_ops *ops); //Vincent 20090526
 	int (*_write_oob) (struct mtd_info *mtd, loff_t to,
 			   struct mtd_oob_ops *ops);
 	int (*_get_fact_prot_info) (struct mtd_info *mtd, struct otp_info *buf,
 				    size_t len);
+	int (*get_para) (struct mtd_info *mtd, int chip);
 	int (*_read_fact_prot_reg) (struct mtd_info *mtd, loff_t from,
 				    size_t len, size_t *retlen, u_char *buf);
 	int (*_get_user_prot_info) (struct mtd_info *mtd, struct otp_info *buf,
@@ -241,6 +250,20 @@ struct mtd_info {
 	struct module *owner;
 	struct device dev;
 	int usecount;
+	int blkcnt;
+	int pagecnt;
+	int dwECCBitNum;
+	int dwRetry;
+	int dwRdmz;
+	int dwDDR;
+	int id;
+	int id2;
+	unsigned int spec_clk;
+	int spec_tadl;
+	int bbt_sw_rdmz;
+	uint32_t pageSizek;
+	int ecc_err_cnt;
+	int ecc_err_level;
 };
 
 int mtd_erase(struct mtd_info *mtd, struct erase_info *instr);
@@ -358,6 +381,8 @@ static inline int mtd_can_have_bb(const struct mtd_info *mtd)
 
 struct mtd_partition;
 struct mtd_part_parser_data;
+extern int add_mtd_device(struct mtd_info *mtd);
+extern int del_mtd_device (struct mtd_info *mtd);
 
 extern int mtd_device_parse_register(struct mtd_info *mtd,
 			      const char **part_probe_types,
@@ -372,6 +397,8 @@ extern int __get_mtd_device(struct mtd_info *mtd);
 extern void __put_mtd_device(struct mtd_info *mtd);
 extern struct mtd_info *get_mtd_device_nm(const char *name);
 extern void put_mtd_device(struct mtd_info *mtd);
+typedef int (*SF_FPTR)(int l);
+extern SF_FPTR wmt_sf_prot;
 
 
 struct mtd_notifier {

@@ -59,7 +59,33 @@ obj-$(CONFIG_IWM)	+= iwmc3200wifi/
 
 obj-$(CONFIG_MWIFIEX)	+= mwifiex/
 
-obj-$(CONFIG_BCMDHD)	+= bcmdhd/
+#obj-$(CONFIG_BCMDHD)	+= bcmdhd/
 
 obj-$(CONFIG_BRCMFMAC)	+= brcm80211/
 obj-$(CONFIG_BRCMSMAC)	+= brcm80211/
+obj-m	+= rtl8188C_8192C/
+#obj-m	+= rtl8188EUS_rtl8189ES_linux_v4.1.7_9024.20130916/
+#obj-m	+= rtl8188EUS_rtl8189ES_linux_v4.1.8_9499.20131104/
+#obj-m	+= rtl8188EUS_linux_v4.3.0_10245.20140114_beta/
+obj-m	+= rtl8188EUS_linux_v4.3.0.6_12167.20140828/
+obj-m	+= rtl8723A_WiFi_linux_v4.1.7_7700.20130531_BTCOEX20130528_ver3.3_beta/
+#obj-m	+= rtl8723BS_WiFi_linux_v4.2.5_9732.20131128_BTCOEX20131113-473F_beta_for_porting/
+#obj-m	+= rtl8723BS_WiFi_linux_v4.2.5_10037.20131227_BTCOEX20131113-473F/
+obj-m	+= rtl8723BS_WiFi_linux_v4.3.0_10255.20140212_BTCOEX20140110-4940/
+obj-m	+= eagle/
+obj-m	+= bcmdhd.1.28.23.x.cn_ap6330/
+obj-m	+= bcmdhd.1.88.45.x.cn/
+obj-m	+= rtl8189ES_linux_v4.1.8/
+obj-m	+= rtl8189ES_linux_v4.3.0_10600.20140220/
+
+obj-$(CONFIG_BCMDHD)	+= bcmdhd.1.28.23.x.cn/
+#obj-m	+= nmc1000/
+#############################################
+# NMI NMC1XXX
+#############################################
+obj-$(CONFIG_NMC1XXX_WIFI_MODULE) += nmi/
+obj-m += nmi_android4.4_driver/src/nmi_memory/
+obj-$(CONFIG_NMC1XXX_WIFI_MODULE) += nmi_android4.4_driver/
+obj-y += combo_mt66xx/
+obj-y += rda/
+obj-$(MTK_MT5931_KK)	+= mt5931/

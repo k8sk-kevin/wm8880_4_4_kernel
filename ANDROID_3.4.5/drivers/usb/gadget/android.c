@@ -28,6 +28,8 @@
 #include <linux/usb/composite.h>
 #include <linux/usb/gadget.h>
 
+#include <linux/power/wmt_battery.h>
+
 #include "gadget_chips.h"
 
 /*
@@ -54,6 +56,7 @@
 #include "f_rndis.c"
 #include "rndis.c"
 #include "u_ether.c"
+#include "f_rawbulk.c"
 
 MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -61,6 +64,9 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0");
 
 static const char longname[] = "Gadget Android";
+
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+extern int wmt_setsyspara(char *varname, char *varval);       
 
 /* Default vendor and product IDs, overridden by userspace */
 #define VENDOR_ID		0x18D1
@@ -215,6 +221,7 @@ static void android_disable(struct android_dev *dev)
 		/* Cancel pending control requests */
 		usb_ep_dequeue(cdev->gadget->ep0, cdev->req);
 		usb_remove_config(cdev, &android_config_driver);
+        usb_ep_autoconfig_reset(cdev->gadget);
 	}
 }
 
@@ -917,6 +924,86 @@ static struct android_usb_function accessory_function = {
 	.bind_config	= accessory_function_bind_config,
 	.ctrlrequest	= accessory_function_ctrlrequest,
 };
+#define CONFIG_USB_ANDROID_RAWBULK 1
+
+/* VIA Rawbulk functions */
+#ifdef CONFIG_USB_ANDROID_RAWBULK
+static int rawbulk_function_init(struct android_usb_function *f,
+					struct usb_composite_dev *cdev)
+{
+	return 0;
+}
+
+static void rawbulk_function_cleanup(struct android_usb_function *f)
+{
+	;
+}
+
+static int rawbulk_function_bind_config(struct android_usb_function *f,
+						struct usb_configuration *c)
+{
+    char *i = f->name + strlen("via_");
+    if (!strncmp(i, "modem", 5))
+        return rawbulk_bind_config(c, RAWBULK_TID_MODEM);
+    else if (!strncmp(i, "ets", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_ETS);
+    else if (!strncmp(i, "atc", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_AT);
+    else if (!strncmp(i, "pcv", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_PCV);
+    else if (!strncmp(i, "gps", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_GPS);
+    return -EINVAL;
+}
+
+static int rawbulk_function_modem_ctrlrequest(struct android_usb_function *f,
+						struct usb_composite_dev *cdev,
+						const struct usb_ctrlrequest *c)
+{
+    if ((c->bRequestType & USB_RECIP_MASK) == USB_RECIP_DEVICE &&
+            (c->bRequestType & USB_TYPE_MASK) == USB_TYPE_VENDOR) {
+        struct rawbulk_function *fn = rawbulk_lookup_function(RAWBULK_TID_MODEM);
+        return rawbulk_function_setup(&fn->function, c);
+    }
+    return -1;
+}
+
+static struct android_usb_function rawbulk_modem_function = {
+	.name		= "via_modem",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+	.ctrlrequest	= rawbulk_function_modem_ctrlrequest,
+};
+
+static struct android_usb_function rawbulk_ets_function = {
+	.name		= "via_ets",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+
+static struct android_usb_function rawbulk_atc_function = {
+	.name		= "via_atc",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+
+static struct android_usb_function rawbulk_pcv_function = {
+	.name		= "via_pcv",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+
+static struct android_usb_function rawbulk_gps_function = {
+	.name		= "via_gps",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+#endif /* CONFIG_USB_ANDROID_RAWBULK */
 
 static int audio_source_function_init(struct android_usb_function *f,
 			struct usb_composite_dev *cdev)
@@ -990,6 +1077,11 @@ static struct android_usb_function *supported_functions[] = {
 	&mass_storage_function,
 	&accessory_function,
 	&audio_source_function,
+    &rawbulk_modem_function,
+    &rawbulk_ets_function,
+    &rawbulk_atc_function,
+    &rawbulk_pcv_function,
+    &rawbulk_gps_function,
 	NULL
 };
 
@@ -1356,6 +1448,23 @@ static void android_unbind_config(struct usb_configuration *c)
 
 	android_unbind_enabled_functions(dev, c);
 }
+unsigned char buf_android_serialno[32];
+
+int get_android_serialno(void)
+{
+	int varlen =127;
+	int retval;
+	memset(buf_android_serialno,0,sizeof(buf_android_serialno));
+  	retval = wmt_getsyspara("androidboot.serialno", buf_android_serialno, &varlen);                   
+  	if(!retval)                                                              
+	{
+		printk("androidboot.serialno=%s\n",buf_android_serialno);
+		return 0x0;
+	}else{
+		printk("uboot variant androidboot.serialno do not exit\n");
+		return -1;
+	}
+}
 
 static int android_bind(struct usb_composite_dev *cdev)
 {
@@ -1391,7 +1500,15 @@ static int android_bind(struct usb_composite_dev *cdev)
 	/* Default strings - should be updated by userspace */
 	strncpy(manufacturer_string, "Android", sizeof(manufacturer_string)-1);
 	strncpy(product_string, "Android", sizeof(product_string) - 1);
-	strncpy(serial_string, "0123456789ABCDEF", sizeof(serial_string) - 1);
+	
+	get_android_serialno();
+	if(strlen(buf_android_serialno)==0){
+		strncpy(serial_string, "0123456789ABCDEF", sizeof(serial_string) - 1);
+		printk("buf_android_serialno is null\n");
+	}else{
+		strncpy(serial_string, buf_android_serialno, sizeof(serial_string) - 1);
+		printk("buf_android_serialno:%s\n",buf_android_serialno);
+	}
 
 	id = usb_string_id(cdev);
 	if (id < 0)
@@ -1467,6 +1584,9 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 	if (!dev->connected) {
 		dev->connected = 1;
 		schedule_work(&dev->work);
+#if defined(CONFIG_BATTERY_WMT)	
+		wmt_do_pc_connected();
+#endif		
 	} else if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
 		schedule_work(&dev->work);
@@ -1518,6 +1638,12 @@ static int android_create_device(struct android_dev *dev)
 	return 0;
 }
 
+/* provide usb connected state for charger */
+int wmt_is_pc_connected(void)
+{
+	return _android_dev ? _android_dev->connected : 0;
+}
+EXPORT_SYMBOL(wmt_is_pc_connected);
 
 static int __init init(void)
 {

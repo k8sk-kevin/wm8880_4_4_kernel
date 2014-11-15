@@ -454,15 +454,20 @@ out_error:
  *
  * Returns zero in case of success and a negative error code in case of failure.
  */
+#if defined(CONFIG_MTD_NAND) 
+extern struct mtd_partition nand_partitions[];
+#endif
 int mtd_device_parse_register(struct mtd_info *mtd, const char **types,
 			      struct mtd_part_parser_data *parser_data,
 			      const struct mtd_partition *parts,
 			      int nr_parts)
 {
-	int err;
+	int err, i, env_nr_parts = 0;
 	struct mtd_partition *real_parts;
 
 	err = parse_mtd_partitions(mtd, types, &real_parts, parser_data);
+	if (err > 0)
+		env_nr_parts = err;
 	if (err <= 0 && nr_parts && parts) {
 		real_parts = kmemdup(parts, sizeof(*parts) * nr_parts,
 				     GFP_KERNEL);
@@ -471,7 +476,18 @@ int mtd_device_parse_register(struct mtd_info *mtd, const char **types,
 		else
 			err = nr_parts;
 	}
-
+#if defined(CONFIG_MTD_NAND)	
+	if (env_nr_parts) {
+		nr_parts = (env_nr_parts < nr_parts) ? env_nr_parts : nr_parts;
+		for (i = 0; i < nr_parts; i++) {
+			if (!strcmp(nand_partitions[i].name, real_parts[i].name)) {
+				/*pdata->partitions[i].offset = real_parts[i].offset;*/
+				nand_partitions[i].offset = real_parts[i].offset;
+				nand_partitions[i].size = real_parts[i].size;
+			}
+		}
+	}
+#endif	
 	if (err > 0) {
 		err = add_mtd_partitions(mtd, real_parts, err);
 		kfree(real_parts);
@@ -1021,6 +1037,9 @@ void *mtd_kmalloc_up_to(const struct mtd_info *mtd, size_t *size)
 	size_t min_alloc = max_t(size_t, mtd->writesize, PAGE_SIZE);
 	void *kbuf;
 
+	if (*size > KMALLOC_MAX_SIZE && KMALLOC_MAX_SIZE >=(4*1024*1024) && (mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+                *size >>= 1;
+		
 	*size = min_t(size_t, *size, KMALLOC_MAX_SIZE);
 
 	while (*size > min_alloc) {
@@ -1040,12 +1059,13 @@ void *mtd_kmalloc_up_to(const struct mtd_info *mtd, size_t *size)
 }
 EXPORT_SYMBOL_GPL(mtd_kmalloc_up_to);
 
-#ifdef CONFIG_PROC_FS
+#if defined(CONFIG_PROC_FS) && defined(CONFIG_MTD_NAND)
 
 /*====================================================================*/
 /* Support for /proc/mtd */
 
 static struct proc_dir_entry *proc_mtd;
+static struct proc_dir_entry *proc_wmt_mtd;
 
 static int mtd_proc_show(struct seq_file *m, void *v)
 {
@@ -1062,9 +1082,33 @@ static int mtd_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
+extern struct mtd_partition nand_partitions[];
+static int wmt_mtd_proc_show(struct seq_file *m, void *v)
+{
+	struct mtd_info *mtd;
+	unsigned long long size = 0;
+
+	seq_puts(m, "dev:  offset    name\n");
+	mutex_lock(&mtd_table_mutex);
+	mtd_for_each_device(mtd) {
+		if(!strcmp(mtd->name, nand_partitions[0].name) || mtd->index == 0) {
+			size = 0;
+		}
+		seq_printf(m, "mtd%d: %8.8llx \"%s\"\n", mtd->index, size, mtd->name);
+		size +=mtd->size;
+	}
+	mutex_unlock(&mtd_table_mutex);
+	return 0;
+}
+
 static int mtd_proc_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, mtd_proc_show, NULL);
+}
+
+static int wmt_mtd_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, wmt_mtd_proc_show, NULL);
 }
 
 static const struct file_operations mtd_proc_ops = {
@@ -1073,6 +1117,14 @@ static const struct file_operations mtd_proc_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+
+static const struct file_operations wmt_mtd_proc_ops = {
+	.open		= wmt_mtd_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 #endif /* CONFIG_PROC_FS */
 
 /*====================================================================*/
@@ -1112,8 +1164,9 @@ static int __init init_mtd(void)
 	if (ret)
 		goto err_bdi3;
 
-#ifdef CONFIG_PROC_FS
+#if defined(CONFIG_PROC_FS)&&defined(CONFIG_MTD_NAND)
 	proc_mtd = proc_create("mtd", 0, NULL, &mtd_proc_ops);
+	proc_wmt_mtd = proc_create("wmt_mtd", 0, NULL, &wmt_mtd_proc_ops);
 #endif /* CONFIG_PROC_FS */
 	return 0;
 
@@ -1130,9 +1183,11 @@ err_reg:
 
 static void __exit cleanup_mtd(void)
 {
-#ifdef CONFIG_PROC_FS
+#if defined(CONFIG_PROC_FS)&&defined(CONFIG_MTD_NAND)
 	if (proc_mtd)
 		remove_proc_entry( "mtd", NULL);
+	if(proc_wmt_mtd)
+		remove_proc_entry( "wmt_mtd", NULL);
 #endif /* CONFIG_PROC_FS */
 	class_unregister(&mtd_class);
 	bdi_destroy(&mtd_bdi_unmappable);

@@ -28,18 +28,29 @@
 #include <linux/ctype.h>
 #include <linux/genhd.h>
 #include <scsi/scsi_scan.h>
-
+#include <mach/hardware.h>
 #include "power.h"
+#include "../../drivers/char/wmt-pwm.h"
 
+#define CONFIG_WMT_KILLER 1
+//#undef CONFIG_WMT_KILLER
+#define MAY_SWAP 0x2
 
 static int nocompress;
 static int noresume;
 static int resume_wait;
 static int resume_delay;
-static char resume_file[256] = CONFIG_PM_STD_PARTITION;
+char resume_file[64] = CONFIG_PM_STD_PARTITION;
 dev_t swsusp_resume_device;
 sector_t swsusp_resume_block;
 int in_suspend __nosavedata;
+extern struct mutex wmt_lock;
+extern int wmt_swap;
+extern u32 __nosave_backup_phys;
+extern u32 __nosave_begin_phys;
+extern u32 __nosave_end_phys;
+static int stress_resume_times;//record stress test times.
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
 
 enum {
 	HIBERNATION_INVALID,
@@ -57,6 +68,24 @@ static int hibernation_mode = HIBERNATION_SHUTDOWN;
 bool freezer_test_done;
 
 static const struct platform_hibernation_ops *hibernation_ops;
+extern void wmt_resume_notify(void);
+extern void lcd_enable_signal(int enable);
+static int wmt_setswap(void)
+{
+        int varlen = 5;
+        char std_env_val[20] = "0";
+        unsigned int std;
+        if (wmt_getsyspara("wmt.std.param", std_env_val, &varlen) == 0) {
+                sscanf(std_env_val, "%X", &std);
+                if (std & MAY_SWAP)
+                        return 1;
+                return 0;
+        } else {
+                printk(KERN_ALERT "##Warning: \"wmt.std.param\" not find\n");
+                printk(KERN_ALERT "Close may_swap function");
+        }
+        return 0;
+}
 
 /**
  * hibernation_set_ops - Set the global hibernate operations.
@@ -236,11 +265,138 @@ void swsusp_show_speed(struct timeval *start, struct timeval *stop,
 		centisecs = 1;	/* avoid div-by-zero */
 	k = nr_pages * (PAGE_SIZE / 1024);
 	kps = (k * 100) / centisecs;
-	printk(KERN_INFO "PM: %s %d kbytes in %d.%02d seconds (%d.%02d MB/s)\n",
+	printk(KERN_CRIT "PM: %s %d kbytes in %d.%02d seconds (%d.%02d MB/s)\n",
 			msg, k,
 			centisecs / 100, centisecs % 100,
 			kps / 1000, (kps % 1000) / 10);
 }
+#ifdef CONFIG_WMT_KILLER
+#include <linux/oom.h>
+
+#define OOM_SCORE_ADJ_MAX	1000
+
+static unsigned long  wmt_deathpending_timeout;
+
+/*Keywords of Excluded Process Name*/
+static const char keywords[][64] = {
+    ".launcher",
+	".mkpro",
+    ""
+};
+/*
+Name: wmt_in_list()
+Desc: list contains some keywords. check if a specific name contains keyword that on the list.
+Param:
+        keyword_list: the list contains keywords
+        name: the name to be checked
+Return:
+        if the specific name contains keywords in the list, 
+        return true, otherwise return false.
+*/
+static bool wmt_in_list(const char keyword_list[][64], const char *name)
+{
+    int i = 0;
+    char *sub_str = NULL;
+    //printk("checking name: %s\n", name);
+    while (strcmp(keyword_list[i], "") != 0) {
+        //printk("matching keyword:%s\n", keyword_list[i]);
+        sub_str = strstr(name, keyword_list[i]);
+
+        if (sub_str) {
+            //printk("matched:%s\n", keyword_list[i]);
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+static void wmt_killer(void)
+{
+	struct task_struct *tsk;
+	struct task_struct *selected = NULL;
+	int rem = 0;
+	int tasksize;
+	int min_score_adj = 1;//OOM_SCORE_ADJ_MAX>>6;
+	int selected_tasksize = 0;
+	int selected_oom_score_adj;
+
+	rem = global_page_state(NR_ACTIVE_ANON) +
+		global_page_state(NR_ACTIVE_FILE) +
+		global_page_state(NR_INACTIVE_ANON) +
+		global_page_state(NR_INACTIVE_FILE);
+	printk("wmt_killer: min_score_adj %d, rem %d\n",
+		min_score_adj,rem);
+
+	selected_oom_score_adj = min_score_adj;
+
+	rcu_read_lock();
+	for_each_process(tsk) {
+		struct task_struct *p;
+		int oom_score_adj;
+
+		if (tsk->flags & PF_KTHREAD)
+			continue;
+
+		p = find_lock_task_mm(tsk);
+		if (!p)
+			continue;
+
+		if (test_tsk_thread_flag(p, TIF_MEMDIE) &&
+			time_before_eq(jiffies, wmt_deathpending_timeout)) {
+				task_unlock(p);
+				rcu_read_unlock();
+				return;
+		}
+		oom_score_adj = p->signal->oom_score_adj;
+		if (oom_score_adj < min_score_adj) {
+			task_unlock(p);
+			continue;
+		}
+		tasksize = get_mm_rss(p->mm);
+		task_unlock(p);
+		if (tasksize <= 0)
+			continue;
+#if 0
+		if (selected) {
+			if (oom_score_adj < selected_oom_score_adj)
+				continue;
+			if (oom_score_adj == selected_oom_score_adj &&
+				tasksize <= selected_tasksize)
+				continue;
+		}
+#endif
+		selected = p;
+		selected_tasksize = tasksize;
+		selected_oom_score_adj = oom_score_adj;
+		printk("wmt_killer: select %d (%s), adj %d, size %d, to kill\n",
+			p->pid, p->comm, oom_score_adj, tasksize);
+
+#if 1	/*check process name first.*/
+		if(wmt_in_list(keywords, p->comm)){
+			printk("[wmt_killer]: Exclude Process :%s\n", p->comm);
+			selected = NULL;
+		}
+#endif
+		if (selected) {
+			printk("wmt_killer: send sigkill to %d (%s), adj %d, size %d\n",
+				selected->pid, selected->comm,
+				selected_oom_score_adj, selected_tasksize);
+			wmt_deathpending_timeout = jiffies + HZ;
+			send_sig(SIGKILL, selected, 0);
+			set_tsk_thread_flag(selected, TIF_MEMDIE);
+			rem -= selected_tasksize;
+		}
+	}
+	rcu_read_unlock();
+	printk("wmt_killer: rem = %d\n", rem);
+}
+
+#else
+static void wmt_killer(void){
+}
+
+#endif
 
 /**
  * create_image - Create a hibernation image.
@@ -254,6 +410,7 @@ void swsusp_show_speed(struct timeval *start, struct timeval *stop,
 static int create_image(int platform_mode)
 {
 	int error;
+	unsigned int pmc_temp;
 
 	error = dpm_suspend_end(PMSG_FREEZE);
 	if (error) {
@@ -279,9 +436,11 @@ static int create_image(int platform_mode)
 		goto Enable_irqs;
 	}
 
+	pmc_temp = PMWS_VAL;
+	pmc_temp &= (WK_TRG_EN_VAL | 0x4000);
+	PMWS_VAL = PMWS_VAL;
 	if (hibernation_test(TEST_CORE) || pm_wakeup_pending())
 		goto Power_up;
-
 	in_suspend = 1;
 	save_processor_state();
 	error = swsusp_arch_suspend();
@@ -290,10 +449,28 @@ static int create_image(int platform_mode)
 			error);
 	/* Restore control flow magically appears here */
 	restore_processor_state();
+#if 1
+	/*check if nosave addresses are correct.*/
+	if(!in_suspend){
+		printk(KERN_CRIT "PM: Image Restored, Resuming...\n");
+		printk("__nosave_backup_phys=0x%x\n",__nosave_backup_phys);
+		printk("__nosave_begin_phys=0x%x\n",__nosave_begin_phys);
+		printk("__nosave_end_phys=0x%x\n",__nosave_end_phys);
+	}
+#endif
 	if (!in_suspend) {
 		events_check_enabled = false;
-		platform_leave(platform_mode);
+		//platform_leave(platform_mode);
 	}
+	/* 
+	  do platform_leave() for both in_suspend = 0 or 1.
+	  When in_suspend=1, 
+	  If we need to abort the procedure,  
+	  platform_leave() will not be called unless we do it here.
+	  Without calling this function,  some devices are not be resumed
+	  and can not functional properly.
+	*/
+	platform_leave(platform_mode);
 
  Power_up:
 	syscore_resume();
@@ -323,16 +500,19 @@ int hibernation_snapshot(int platform_mode)
 {
 	pm_message_t msg;
 	int error;
-
+	
 	error = platform_begin(platform_mode);
 	if (error)
 		goto Close;
 
 	/* Preallocate image memory before shutting down devices. */
 	error = hibernate_preallocate_memory();
-	if (error)
+	if (error) {
+		mutex_lock(&wmt_lock);
+		mutex_unlock(&wmt_lock);
 		goto Close;
-
+	}
+	mutex_lock(&wmt_lock);
 	error = freeze_kernel_threads();
 	if (error)
 		goto Cleanup;
@@ -362,7 +542,7 @@ int hibernation_snapshot(int platform_mode)
 		platform_recover(platform_mode);
 	else
 		error = create_image(platform_mode);
-
+	mutex_unlock(&wmt_lock);
 	/*
 	 * In the case that we call create_image() above, the control
 	 * returns here (1) after the image has been created or the
@@ -599,8 +779,20 @@ static void power_down(void)
 int hibernate(void)
 {
 	int error;
+	char std_env_val[20] = "0";
+	int varlen = 5;
+	unsigned int std;
 
 	lock_system_sleep();
+	
+	error = swsusp_swap_check();
+	if (error) {
+		if (error != -ENOSPC)
+			printk(KERN_ERR "PM: Cannot find swap device, try "
+			"swapon -a.\n");
+		goto Unlock;
+	}
+
 	/* The snapshot device should not be opened while we're running */
 	if (!atomic_add_unless(&snapshot_device_available, -1, 0)) {
 		error = -EBUSY;
@@ -611,24 +803,29 @@ int hibernate(void)
 	error = pm_notifier_call_chain(PM_HIBERNATION_PREPARE);
 	if (error)
 		goto Exit;
+	/*Try to open swap function*/
+	wmt_swap = wmt_setswap();
 
 	/* Allocate memory management structures */
 	error = create_basic_memory_bitmaps();
 	if (error)
 		goto Exit;
 
-	printk(KERN_INFO "PM: Syncing filesystems ... ");
+	printk(KERN_CRIT "PM: Syncing filesystems ... ");
 	sys_sync();
 	printk("done.\n");
+
+	wmt_killer();//kill process to save memory before freeze_process.
 
 	error = freeze_processes();
 	if (error)
 		goto Free_bitmaps;
 
 	error = hibernation_snapshot(hibernation_mode == HIBERNATION_PLATFORM);
-	if (error || freezer_test_done)
+	if (error || freezer_test_done) {
+		pm_notifier_call_chain(PM_HIBERNATION_FINISH);
 		goto Thaw;
-
+	}
 	if (in_suspend) {
 		unsigned int flags = 0;
 
@@ -639,15 +836,24 @@ int hibernate(void)
 		else
 		        flags |= SF_CRC32_MODE;
 
-		pr_debug("PM: writing image.\n");
+		printk(KERN_CRIT"PM: writing image.\n");
 		error = swsusp_write(flags);
+		pm_notifier_call_chain(PM_HIBERNATION_FINISH);
 		swsusp_free();
 		if (!error)
 			power_down();
 		in_suspend = 0;
 		pm_restore_gfp_mask();
 	} else {
-		pr_debug("PM: Image restored successfully.\n");
+		mutex_unlock(&wmt_lock);
+		printk(KERN_CRIT "PM: Image restored successfully.\n");
+		printk(KERN_CRIT "PM: STD Stress Test: %d times\n",++stress_resume_times);
+		printk(KERN_CRIT "Resume to Android\n");
+		if (wmt_getsyspara("wmt.std.param",std_env_val,&varlen) == 0) {
+			sscanf(std_env_val,"%X",&std);
+			if (std & 0x1) 
+				wmt_resume_notify();
+		}
 	}
 
  Thaw:
@@ -664,6 +870,8 @@ int hibernate(void)
 	atomic_inc(&snapshot_device_available);
  Unlock:
 	unlock_system_sleep();
+
+	wmt_swap = 1;
 	return error;
 }
 
@@ -687,7 +895,13 @@ static int software_resume(void)
 {
 	int error;
 	unsigned int flags;
+	int retry_wait;
 
+	/*
+	  Set resume_wait to 1 is essential when using mmc device as std partition.
+	  Note that kernel will wait for it until it is present.
+	*/
+	resume_wait = 1;
 	/*
 	 * If the user said "noresume".. bail out early.
 	 */
@@ -714,7 +928,7 @@ static int software_resume(void)
 		goto Unlock;
 	}
 
-	pr_debug("PM: Checking hibernation image partition %s\n", resume_file);
+	printk(KERN_CRIT"PM: Checking hibernation image partition %s\n", resume_file);
 
 	if (resume_delay) {
 		printk(KERN_INFO "Waiting %dsec before reading resume device...\n",
@@ -740,11 +954,20 @@ static int software_resume(void)
 		 * Some device discovery might still be in progress; we need
 		 * to wait for this to finish.
 		 */
+		printk(KERN_CRIT"\n resume device not present.\n");
 		wait_for_device_probe();
 
 		if (resume_wait) {
+#if 0
 			while ((swsusp_resume_device = name_to_dev_t(resume_file)) == 0)
 				msleep(10);
+#else
+			for(retry_wait=100; retry_wait>0; retry_wait--){
+				if((swsusp_resume_device = name_to_dev_t(resume_file)) == 0){
+					msleep(10);
+				}
+			}	
+#endif
 			async_synchronize_full();
 		}
 
@@ -763,10 +986,10 @@ static int software_resume(void)
 	}
 
  Check_image:
-	pr_debug("PM: Hibernation image partition %d:%d present\n",
+	printk(KERN_CRIT"PM: Hibernation image partition %d:%d present\n",
 		MAJOR(swsusp_resume_device), MINOR(swsusp_resume_device));
 
-	pr_debug("PM: Looking for hibernation image.\n");
+	printk(KERN_CRIT"PM: Looking for hibernation image.\n");
 	error = swsusp_check();
 	if (error)
 		goto Unlock;
@@ -787,14 +1010,14 @@ static int software_resume(void)
 	if (error)
 		goto close_finish;
 
-	pr_debug("PM: Preparing processes for restore.\n");
+	printk(KERN_CRIT"PM: Preparing processes for restore.\n");
 	error = freeze_processes();
 	if (error) {
 		swsusp_close(FMODE_READ);
 		goto Done;
 	}
 
-	pr_debug("PM: Loading hibernation image.\n");
+	printk(KERN_CRIT"PM: Loading hibernation image.\n");
 
 	error = swsusp_read(&flags);
 	swsusp_close(FMODE_READ);
@@ -813,7 +1036,7 @@ static int software_resume(void)
 	/* For success case, the suspend path will release the lock */
  Unlock:
 	mutex_unlock(&pm_mutex);
-	pr_debug("PM: Hibernation image not present or could not be loaded.\n");
+	printk(KERN_CRIT"PM: Hibernation image not present or could not be loaded.\n");
 	return error;
 close_finish:
 	swsusp_close(FMODE_READ);
@@ -919,7 +1142,7 @@ static ssize_t disk_store(struct kobject *kobj, struct kobj_attribute *attr,
 		error = -EINVAL;
 
 	if (!error)
-		pr_debug("PM: Hibernation mode set to '%s'\n",
+		printk(KERN_CRIT"PM: Hibernation mode set to '%s'\n",
 			 hibernation_modes[mode]);
 	unlock_system_sleep();
 	return error ? error : n;

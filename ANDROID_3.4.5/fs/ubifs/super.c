@@ -36,6 +36,8 @@
 #include <linux/mount.h>
 #include <linux/math64.h>
 #include <linux/writeback.h>
+#include <linux/reboot.h>
+#include <linux/syscalls.h>
 #include "ubifs.h"
 
 /*
@@ -48,10 +50,83 @@
 struct kmem_cache *ubifs_inode_slab;
 
 /* UBIFS TNC shrinker description */
+
+static void kill_ubifs_super(struct super_block *s);
+
+extern int do_remount_sb(struct super_block *sb, int flags, void *data, int force);
+
 static struct shrinker ubifs_shrinker_info = {
 	.shrink = ubifs_shrinker,
 	.seeks = DEFAULT_SEEKS,
 };
+
+
+
+static int ubifs_reboot (struct notifier_block *nb, unsigned long code, void *_cmd)
+{
+
+	struct ubifs_info *c;
+	struct super_block *sb;
+
+	c = container_of(nb, struct ubifs_info, reboot_notifier);
+	sb = c->vfs_sb;
+
+	down_write(&sb->s_umount);
+	do_remount_sb(sb, MS_RDONLY, NULL, 1);
+	up_write(&sb->s_umount);
+	ubi_update_volume(c->ubi);
+#if 0	
+	mutex_lock(&c->umount_mutex);
+	c->no_chk_data_crc = 0;
+	c->vfs_sb->s_flags |= MS_RDONLY;
+
+	if (c->bgt) {
+                kthread_stop(c->bgt);
+                c->bgt = NULL;
+        }
+	/* Synchronize write-buffers */
+	for (i = 0; i < c->jhead_cnt; i++)
+		ubifs_wbuf_sync(&c->jheads[i].wbuf);
+
+
+	mutex_lock(&c->mst_mutex);
+	c->mst_node->flags &= ~cpu_to_le32(UBIFS_MST_DIRTY);
+	c->mst_node->flags |= cpu_to_le32(UBIFS_MST_NO_ORPHS);
+	c->mst_node->gc_lnum = cpu_to_le32(c->gc_lnum);
+	err = ubifs_write_master(c);
+	mutex_unlock(&c->mst_mutex);
+	//err = ubifs_run_commit(c);
+
+	for (i = 0; i < c->jhead_cnt; i++)
+	/* Make sure write-buffer timers are canceled */
+	hrtimer_cancel(&c->jheads[i].wbuf.timer);
+	ubi_update_volume(c->ubi);
+#if 0
+	if (ubi->bgt_thread) {
+		kthread_stop(ubi->bgt_thread);
+		ubi->bgt_thread = NULL;
+	}
+	//ubi_update_volume(c->ubi);
+#endif
+	if (err)
+		ubifs_ro_mode(c, err);
+//	ubi->ro_mode = 1;
+	ubifs_msg("switched to read-only mode");
+	vfree(c->orph_buf);
+	c->orph_buf = NULL;
+	kfree(c->write_reserve_buf);
+	c->write_reserve_buf = NULL;
+	vfree(c->ileb_buf);
+	c->ileb_buf = NULL;
+	ubifs_lpt_free(c, 1);
+	c->ro_mount = 1;
+	err = dbg_check_space_info(c);
+	if (err)
+		ubifs_ro_mode(c, err);
+	mutex_unlock(&c->umount_mutex);
+#endif
+	return NOTIFY_DONE;	
+}
 
 /**
  * validate_inode - validate inode.
@@ -153,6 +228,7 @@ struct inode *ubifs_iget(struct super_block *sb, unsigned long inum)
 	ui->xattr = (ui->flags & UBIFS_XATTR_FL) ? 1 : 0;
 
 	err = validate_inode(c, inode);
+
 	if (err)
 		goto out_invalid;
 
@@ -410,8 +486,8 @@ static int ubifs_statfs(struct dentry *dentry, struct kstatfs *buf)
 		buf->f_bavail = (free - c->report_rp_size) >> UBIFS_BLOCK_SHIFT;
 	else
 		buf->f_bavail = 0;
-	buf->f_files = 0;
-	buf->f_ffree = 0;
+	buf->f_files = c->highest_inum;
+	buf->f_ffree = INUM_WATERMARK - c->highest_inum;
 	buf->f_namelen = UBIFS_MAX_NLEN;
 	buf->f_fsid.val[0] = le32_to_cpu(uuid[0]) ^ le32_to_cpu(uuid[2]);
 	buf->f_fsid.val[1] = le32_to_cpu(uuid[1]) ^ le32_to_cpu(uuid[3]);
@@ -795,6 +871,14 @@ static int take_gc_lnum(struct ubifs_info *c)
 static int alloc_wbufs(struct ubifs_info *c)
 {
 	int i, err;
+	
+	c->buf = kmalloc(c->max_idx_node_sz, GFP_KERNEL);	
+	err = ubifs_wbuf_init(c, &c->idx_buf);
+	if(err) 
+		return err;
+	
+	c->idx_buf.dtype = UBI_LONGTERM;
+	c->idx_buf.no_timer = 1;
 
 	c->jheads = kzalloc(c->jhead_cnt * sizeof(struct ubifs_jhead),
 			   GFP_KERNEL);
@@ -842,6 +926,9 @@ static void free_wbufs(struct ubifs_info *c)
 		kfree(c->jheads);
 		c->jheads = NULL;
 	}
+	kfree(c->idx_buf.buf);
+	kfree(c->idx_buf.inodes);
+	kfree(c->buf);
 }
 
 /**
@@ -1531,7 +1618,7 @@ static void ubifs_umount(struct ubifs_info *c)
 {
 	dbg_gen("un-mounting UBI device %d, volume %d", c->vi.ubi_num,
 		c->vi.vol_id);
-
+	unregister_reboot_notifier(&c->reboot_notifier);
 	dbg_debugfs_exit_fs(c);
 	spin_lock(&ubifs_infos_lock);
 	list_del(&c->infos_list);
@@ -1813,7 +1900,7 @@ static void ubifs_put_super(struct super_block *sb)
 		 * not write the master node.
 		 */
 		if (!c->ro_error) {
-			int err;
+			int err = 0;
 
 			/* Synchronize write-buffers */
 			for (i = 0; i < c->jhead_cnt; i++)
@@ -2062,6 +2149,8 @@ static int ubifs_fill_super(struct super_block *sb, void *data, int silent)
 		sb->s_maxbytes = c->max_inode_sz = MAX_LFS_FILESIZE;
 	sb->s_op = &ubifs_super_operations;
 
+
+
 	mutex_lock(&c->umount_mutex);
 	err = mount_ubifs(c);
 	if (err) {
@@ -2166,7 +2255,8 @@ static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
 
 	/* 'fill_super()' opens ubi again so we must close it here */
 	ubi_close_volume(ubi);
-
+	c->reboot_notifier.notifier_call = ubifs_reboot;
+	register_reboot_notifier(&c->reboot_notifier);//Johnny Liu
 	return dget(sb->s_root);
 
 out_deact:
@@ -2182,7 +2272,15 @@ static void kill_ubifs_super(struct super_block *s)
 	kill_anon_super(s);
 	kfree(c);
 }
-
+#if 0
+static int ubifs_reboot (struct super_block *s)
+{
+	kill_ubifs_super(s);
+}
+static struct notifier_block ubifs_reboot_notifier = {
+	.notifier_call = ubifs_reboot
+};
+#endif
 static struct file_system_type ubifs_fs_type = {
 	.name    = "ubifs",
 	.owner   = THIS_MODULE,

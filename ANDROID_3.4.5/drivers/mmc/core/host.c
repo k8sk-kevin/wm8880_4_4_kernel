@@ -29,10 +29,19 @@
 
 #define cls_dev_to_mmc_host(d)	container_of(d, struct mmc_host, class_dev)
 
+
+#if 0
+#define DBG(x...)	printk(KERN_ALERT x)
+#else
+#define DBG(x...)	do { } while (0)
+#endif
+
 static void mmc_host_classdev_release(struct device *dev)
 {
 	struct mmc_host *host = cls_dev_to_mmc_host(dev);
+	DBG("[%s] s\n",__func__);
 	kfree(host);
+	DBG("[%s] e\n",__func__);
 }
 
 static struct class mmc_host_class = {
@@ -42,12 +51,20 @@ static struct class mmc_host_class = {
 
 int mmc_register_host_class(void)
 {
-	return class_register(&mmc_host_class);
+	int ret;
+	
+	DBG("[%s] s\n",__func__);
+	ret = class_register(&mmc_host_class);
+	DBG("[%s] e\n",__func__);
+	//return class_register(&mmc_host_class);
+	return ret;
 }
 
 void mmc_unregister_host_class(void)
 {
+	DBG("[%s] s\n",__func__);
 	class_unregister(&mmc_host_class);
+	DBG("[%s] e\n",__func__);
 }
 
 static DEFINE_IDR(mmc_host_idr);
@@ -58,6 +75,7 @@ static ssize_t clkgate_delay_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct mmc_host *host = cls_dev_to_mmc_host(dev);
+	DBG("[%s] s\n",__func__);
 	return snprintf(buf, PAGE_SIZE, "%lu\n", host->clkgate_delay);
 }
 
@@ -67,12 +85,17 @@ static ssize_t clkgate_delay_store(struct device *dev,
 	struct mmc_host *host = cls_dev_to_mmc_host(dev);
 	unsigned long flags, value;
 
-	if (kstrtoul(buf, 0, &value))
+	DBG("[%s] s\n",__func__);
+
+	if (kstrtoul(buf, 0, &value)) {
+		DBG("[%s] e1\n",__func__);
 		return -EINVAL;
+	}
 
 	spin_lock_irqsave(&host->clk_lock, flags);
 	host->clkgate_delay = value;
 	spin_unlock_irqrestore(&host->clk_lock, flags);
+	DBG("[%s] e2\n",__func__);
 	return count;
 }
 
@@ -89,10 +112,13 @@ static void mmc_host_clk_gate_delayed(struct mmc_host *host)
 	unsigned long freq = host->ios.clock;
 	unsigned long flags;
 
+	DBG("[%s] s\n",__func__);
+
 	if (!freq) {
 		pr_debug("%s: frequency set to 0 in disable function, "
 			 "this means the clock is already disabled.\n",
 			 mmc_hostname(host));
+		DBG("[%s] e1\n",__func__);
 		return;
 	}
 	/*
@@ -114,6 +140,7 @@ static void mmc_host_clk_gate_delayed(struct mmc_host *host)
 	} else {
 		/* New users appeared while waiting for this work */
 		spin_unlock_irqrestore(&host->clk_lock, flags);
+		DBG("[%s] e2\n",__func__);
 		return;
 	}
 	mutex_lock(&host->clk_gate_mutex);
@@ -127,6 +154,8 @@ static void mmc_host_clk_gate_delayed(struct mmc_host *host)
 	}
 	spin_unlock_irqrestore(&host->clk_lock, flags);
 	mutex_unlock(&host->clk_gate_mutex);
+
+	DBG("[%s] e3\n",__func__);
 }
 
 /*
@@ -136,8 +165,9 @@ static void mmc_host_clk_gate_work(struct work_struct *work)
 {
 	struct mmc_host *host = container_of(work, struct mmc_host,
 					      clk_gate_work.work);
-
+	DBG("[%s] s\n",__func__);
 	mmc_host_clk_gate_delayed(host);
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -151,7 +181,8 @@ static void mmc_host_clk_gate_work(struct work_struct *work)
 void mmc_host_clk_hold(struct mmc_host *host)
 {
 	unsigned long flags;
-
+	DBG("[%s] s\n",__func__);
+	
 	/* cancel any clock gating work scheduled by mmc_host_clk_release() */
 	cancel_delayed_work_sync(&host->clk_gate_work);
 	mutex_lock(&host->clk_gate_mutex);
@@ -165,6 +196,7 @@ void mmc_host_clk_hold(struct mmc_host *host)
 	host->clk_requests++;
 	spin_unlock_irqrestore(&host->clk_lock, flags);
 	mutex_unlock(&host->clk_gate_mutex);
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -173,9 +205,12 @@ void mmc_host_clk_hold(struct mmc_host *host)
  */
 static bool mmc_host_may_gate_card(struct mmc_card *card)
 {
+	DBG("[%s] s\n",__func__);
 	/* If there is no card we may gate it */
-	if (!card)
+	if (!card) {
+		DBG("[%s] e1\n",__func__);
 		return true;
+	}
 	/*
 	 * Don't gate SDIO cards! These need to be clocked at all times
 	 * since they may be independent systems generating interrupts
@@ -184,6 +219,7 @@ static bool mmc_host_may_gate_card(struct mmc_card *card)
 	 * gate the clock, because there is somebody out there that may still
 	 * be using it.
 	 */
+	DBG("[%s] e2\n",__func__); 
 	return !(card->quirks & MMC_QUIRK_BROKEN_CLK_GATING);
 }
 
@@ -198,6 +234,7 @@ static bool mmc_host_may_gate_card(struct mmc_card *card)
 void mmc_host_clk_release(struct mmc_host *host)
 {
 	unsigned long flags;
+	DBG("[%s] s\n",__func__);
 
 	spin_lock_irqsave(&host->clk_lock, flags);
 	host->clk_requests--;
@@ -206,6 +243,8 @@ void mmc_host_clk_release(struct mmc_host *host)
 		queue_delayed_work(system_nrt_wq, &host->clk_gate_work,
 				msecs_to_jiffies(host->clkgate_delay));
 	spin_unlock_irqrestore(&host->clk_lock, flags);
+
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -218,6 +257,7 @@ unsigned int mmc_host_clk_rate(struct mmc_host *host)
 {
 	unsigned long freq;
 	unsigned long flags;
+	DBG("[%s] s\n",__func__);
 
 	spin_lock_irqsave(&host->clk_lock, flags);
 	if (host->clk_gated)
@@ -225,6 +265,8 @@ unsigned int mmc_host_clk_rate(struct mmc_host *host)
 	else
 		freq = host->ios.clock;
 	spin_unlock_irqrestore(&host->clk_lock, flags);
+
+	DBG("[%s] e\n",__func__);
 	return freq;
 }
 
@@ -234,6 +276,7 @@ unsigned int mmc_host_clk_rate(struct mmc_host *host)
  */
 static inline void mmc_host_clk_init(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 	host->clk_requests = 0;
 	/* Hold MCI clock for 8 cycles by default */
 	host->clk_delay = 8;
@@ -246,6 +289,7 @@ static inline void mmc_host_clk_init(struct mmc_host *host)
 	INIT_DELAYED_WORK(&host->clk_gate_work, mmc_host_clk_gate_work);
 	spin_lock_init(&host->clk_lock);
 	mutex_init(&host->clk_gate_mutex);
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -254,6 +298,7 @@ static inline void mmc_host_clk_init(struct mmc_host *host)
  */
 static inline void mmc_host_clk_exit(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 	/*
 	 * Wait for any outstanding gate and then make sure we're
 	 * ungated before exiting.
@@ -264,6 +309,7 @@ static inline void mmc_host_clk_exit(struct mmc_host *host)
 		mmc_host_clk_hold(host);
 	/* There should be only one user now */
 	WARN_ON(host->clk_requests > 1);
+	DBG("[%s] e\n",__func__);
 }
 
 static inline void mmc_host_clk_sysfs_init(struct mmc_host *host)
@@ -304,13 +350,18 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 {
 	int err;
 	struct mmc_host *host;
+	DBG("[%s] s\n",__func__);
 
-	if (!idr_pre_get(&mmc_host_idr, GFP_KERNEL))
+	if (!idr_pre_get(&mmc_host_idr, GFP_KERNEL)) {
+		DBG("[%s] e1\n",__func__);
 		return NULL;
+	}
 
 	host = kzalloc(sizeof(struct mmc_host) + extra, GFP_KERNEL);
-	if (!host)
+	if (!host) {
+		DBG("[%s] e2\n",__func__);
 		return NULL;
+	}
 
 	spin_lock(&mmc_host_lock);
 	err = idr_get_new(&mmc_host_idr, host, &host->index);
@@ -347,10 +398,12 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	host->max_blk_size = 512;
 	host->max_blk_count = PAGE_CACHE_SIZE / 512;
 
+	DBG("[%s] e3\n",__func__);
 	return host;
 
 free:
 	kfree(host);
+	DBG("[%s] e4\n",__func__);
 	return NULL;
 }
 
@@ -364,16 +417,18 @@ EXPORT_SYMBOL(mmc_alloc_host);
  *	prepared to start servicing requests before this function
  *	completes.
  */
-int mmc_add_host(struct mmc_host *host)
+int mmc_add_host(struct mmc_host *host, bool detect)
 {
 	int err;
-
+	DBG("[%s] s\n",__func__);
 	WARN_ON((host->caps & MMC_CAP_SDIO_IRQ) &&
 		!host->ops->enable_sdio_irq);
 
 	err = device_add(&host->class_dev);
-	if (err)
+	if (err) {
+		DBG("[%s] e1\n",__func__);
 		return err;
+	}
 
 	led_trigger_register_simple(dev_name(&host->class_dev), &host->led);
 
@@ -382,10 +437,11 @@ int mmc_add_host(struct mmc_host *host)
 #endif
 	mmc_host_clk_sysfs_init(host);
 
-	mmc_start_host(host);
+	mmc_start_host(host, detect);
 	if (!(host->pm_flags & MMC_PM_IGNORE_PM_NOTIFY))
 		register_pm_notifier(&host->pm_notify);
 
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 
@@ -401,6 +457,7 @@ EXPORT_SYMBOL(mmc_add_host);
  */
 void mmc_remove_host(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 	if (!(host->pm_flags & MMC_PM_IGNORE_PM_NOTIFY))
 		unregister_pm_notifier(&host->pm_notify);
 
@@ -415,6 +472,7 @@ void mmc_remove_host(struct mmc_host *host)
 	led_trigger_unregister_simple(host->led);
 
 	mmc_host_clk_exit(host);
+	DBG("[%s] e\n",__func__);
 }
 
 EXPORT_SYMBOL(mmc_remove_host);
@@ -427,12 +485,14 @@ EXPORT_SYMBOL(mmc_remove_host);
  */
 void mmc_free_host(struct mmc_host *host)
 {
+	DBG("[%s] s\n",__func__);
 	spin_lock(&mmc_host_lock);
 	idr_remove(&mmc_host_idr, host->index);
 	spin_unlock(&mmc_host_lock);
 	wake_lock_destroy(&host->detect_wake_lock);
 
 	put_device(&host->class_dev);
+	DBG("[%s] e\n",__func__);
 }
 
 EXPORT_SYMBOL(mmc_free_host);

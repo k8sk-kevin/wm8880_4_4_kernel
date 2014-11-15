@@ -343,12 +343,12 @@ config MTD_NAND_SHARPSL
 	depends on ARCH_PXA
 
 config MTD_NAND_CAFE
-	tristate "NAND support for OLPC CAFÉ chip"
+	tristate "NAND support for OLPC CAF? chip"
 	depends on PCI
 	select REED_SOLOMON
 	select REED_SOLOMON_DEC16
 	help
-	  Use NAND flash attached to the CAFÉ chip designed for the OLPC
+	  Use NAND flash attached to the CAF? chip designed for the OLPC
 	  laptop.
 
 config MTD_NAND_CS553X
@@ -570,5 +570,64 @@ config MTD_NAND_FSMC
 	help
 	  Enables support for NAND Flash chips on the ST Microelectronics
 	  Flexible Static Memory Controller (FSMC)
+
+config MTD_NAND_WMT
+        tristate "NAND Flash support for WMT SoC"
+#       depends on ARCH_VT8500
+        help
+          This enables the NAND flash controller on the WMT
+          SoCs
+
+          No board specific support is done by this driver, each board
+          must advertise a platform_device for the driver to attach.
+
+config MTD_NAND_CHIP_NUM
+        int "NAND Flash numbers select verbosity (1 = CE0, 2 = CE0,CE1)"
+        depends on MTD_NAND_WMT
+        default "2"
+        help
+          Determines the verbosity numbers of nand chip supported by WMT.
+
+config MTD_NAND_WMT_HWECC
+        bool "WMT NAND Hardware ECC"
+        depends on MTD_NAND_WMT
+        default y
+        help
+          Enable the use of the WMT's internal ECC generator when
+          using NAND.
+
+config MTD_NAND_HM_ECC
+        int "WMT NAND Hardware ECC Algorithm select verbosity(Harming ECC: =1, BCH ECC: =2)"
+        depends on MTD_NAND_WMT
+        default "2"
+        help
+          Enable the use of the WMT's internal ECC generator when
+          using NAND.
+        
+choice
+	prompt "WMT NAND Partition for System"
+	default MTD_NAND_WMT_ANDROID
+	depends on MTD_NAND_WMT
+	help
+          Partition Nand Flash for Android, Ubuntu or Android/Ubuntu Dual system
+
+config MTD_NAND_WMT_ANDROID
+        bool "Android"
+        depends on MTD_NAND_WMT
+        help
+          Partition Nand Flash for WMT Android System
+		
+config MTD_NAND_WMT_UBUNTU
+        bool "Ubuntu"
+        depends on MTD_NAND_WMT
+        help
+          Partition Nand Flash for WMT Ubuntu System 
+	  
+config MTD_NAND_WMT_ANDROID_UBUNTU_DUALOS
+        bool "Android + Ubuntu"
+	depends on MTD_NAND_WMT
+	help
+          Partition Nand Flash for WMT Android/Ubuntu Dual System 
+endchoice
 
 endif # MTD_NAND

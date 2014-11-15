@@ -63,3 +63,7 @@ obj-$(CONFIG_SPI_TOPCLIFF_PCH)		+= spi-topcliff-pch.o
 obj-$(CONFIG_SPI_TXX9)			+= spi-txx9.o
 obj-$(CONFIG_SPI_XILINX)		+= spi-xilinx.o
 
+#WMT proprietary SPI driver
+obj-$(CONFIG_WMT_NEWSPI_SUPPORT)	+= wmt_spi.o
+obj-$(CONFIG_WMT_NEWSPI1_SUPPORT)	+= wmt_spi_1.o
+obj-$(CONFIG_WMT_SPISLAVE1_SUPPORT)	+= wmt_spislave.o

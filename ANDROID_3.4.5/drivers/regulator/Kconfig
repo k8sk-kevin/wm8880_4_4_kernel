@@ -366,5 +366,24 @@ config REGULATOR_WM8994
 	  This driver provides support for the voltage regulators on the
 	  WM8994 CODEC.
 
+
+config REGULATOR_WMTGPIO
+	bool "WMT GPIO PMIC"
+	help
+	  This driver supports the voltage regulators provided by
+	  this family of companion chips.
+
+config REGULATOR_UPI6631
+	bool "UPI6631"
+	help
+	  This driver supports the voltage regulators provided by
+	  this family of companion chips.
+
+config REGULATOR_GMT2214
+	bool "GMT2214"
+	help
+	  This driver supports the voltage regulators provided by
+	  this family of companion chips.
+
 endif
 

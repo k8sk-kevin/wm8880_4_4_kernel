@@ -771,5 +771,26 @@ static inline unsigned ehci_read_frame_index(struct ehci_hcd *ehci)
 #endif	/* DEBUG */
 
 /*-------------------------------------------------------------------------*/
+/*{CharlesTu, 2010.08.26,  for test mode */
 
+static struct list_head *
+qh_urb_transaction (
+	struct ehci_hcd		*ehci,
+	struct urb		*urb,
+	struct list_head	*head,
+	gfp_t			flags
+);
+
+static int submit_async (
+	struct ehci_hcd		*ehci,
+	struct urb		*urb,
+	struct list_head	*qtd_list,
+	gfp_t			mem_flags
+) ;
+
+static inline void ehci_qtd_free (
+		struct ehci_hcd *ehci,
+		struct ehci_qtd *qtd);
+		
+/*CharlesTu}*/
 #endif /* __LINUX_EHCI_HCD_H */

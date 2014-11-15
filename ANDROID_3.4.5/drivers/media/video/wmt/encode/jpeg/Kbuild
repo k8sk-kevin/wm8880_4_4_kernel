@@ -1,0 +1,3 @@
+obj-m += g_wmt_ve_jpeg.o
+g_wmt_ve_jpeg-y := hw-jenc.o wmt-jenc.o
+

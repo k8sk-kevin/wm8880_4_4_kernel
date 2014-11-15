@@ -417,7 +417,8 @@ config CPU_V6K
 
 # ARMv7
 config CPU_V7
-	bool "Support ARM V7 processor" if ARCH_INTEGRATOR || MACH_REALVIEW_EB || MACH_REALVIEW_PBX
+	bool "Support ARM V7 processor" if ARCH_INTEGRATOR || MACH_REALVIEW_EB || MACH_REALVIEW_PBX || ARCH_WMT
+	default y if ARCH_WMT
 	select CPU_32v6K
 	select CPU_32v7
 	select CPU_ABRT_EV7
@@ -918,3 +919,11 @@ config ARCH_HAS_BARRIERS
 	help
 	  This option allows the use of custom mandatory barriers
 	  included via the mach/barriers.h file.
+
+config ARCH_WMT_SMP_CACHEPOLICY_WRITEBACK
+	bool "Set SMP kernel cache policy as write-back"
+	depends on ARCH_WMT && CPU_V7 && SMP
+	default y
+	help
+	  This option set cache policy as write-back to improve memcpy()
+	  speed.

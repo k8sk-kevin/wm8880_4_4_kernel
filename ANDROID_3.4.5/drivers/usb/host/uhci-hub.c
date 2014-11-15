@@ -98,9 +98,12 @@ static void uhci_finish_suspend(struct uhci_hcd *uhci, int port,
 {
 	int status;
 	int i;
+	u16	tmp;
+	
 
 	if (uhci_readw(uhci, port_addr) & SUSPEND_BITS) {
 		CLR_RH_PORTSTAT(SUSPEND_BITS);
+		wmb();
 		if (test_bit(port, &uhci->resuming_ports))
 			set_bit(port, &uhci->port_c_suspend);
 
@@ -110,9 +113,13 @@ static void uhci_finish_suspend(struct uhci_hcd *uhci, int port,
 		 * Experiments show that some controllers take longer, so
 		 * we'll poll for completion. */
 		for (i = 0; i < 10; ++i) {
-			if (!(uhci_readw(uhci, port_addr) & SUSPEND_BITS))
-				break;
 			udelay(1);
+			tmp = uhci_readw(uhci, port_addr);
+			//if (!(uhci_readw(uhci, port_addr) & SUSPEND_BITS)){
+				//printk("uhci_finish_suspend 01\n");
+			if (!(tmp & SUSPEND_BITS)){
+				break;
+			}
 		}
 	}
 	clear_bit(port, &uhci->resuming_ports);

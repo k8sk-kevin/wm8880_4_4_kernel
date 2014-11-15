@@ -1,0 +1,4 @@
+config WIFI_EAGLE
+	tristate "eagle wifi support"
+	default m
+	

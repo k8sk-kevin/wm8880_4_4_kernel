@@ -1543,6 +1543,9 @@ static int ieee80211_scan(struct wiphy *wiphy,
 	case NL80211_IFTYPE_P2P_GO:
 		if (sdata->local->ops->hw_scan)
 			break;
+		//add by dulong
+		printk("use soft_scan when scan_type is NL80211_IFTYPE_P2P_GO\n");
+		break;
 		/*
 		 * FIXME: implement NoA while scanning in software,
 		 * for now fall through to allow scanning only when

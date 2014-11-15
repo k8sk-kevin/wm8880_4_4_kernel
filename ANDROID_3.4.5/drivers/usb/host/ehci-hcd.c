@@ -130,6 +130,10 @@ MODULE_PARM_DESC(hird, "host initiated resume duration, +1 for each 75us");
 
 /*-------------------------------------------------------------------------*/
 
+extern unsigned int usb_storage_id;
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);	
+unsigned int usb_param[2] = {0xff};
+
 static void
 timer_action(struct ehci_hcd *ehci, enum ehci_timer_action action)
 {
@@ -599,6 +603,14 @@ static void ehci_stop (struct usb_hcd *hcd)
 		    ehci_readl(ehci, &ehci->regs->status));
 }
 
+int	env_mos_gpio;
+unsigned int	env_active;
+unsigned int	env_port;
+unsigned int	env_bitmap;
+unsigned int	env_ctraddr;
+unsigned int	env_ocaddr;
+unsigned int	env_odaddr;
+
 /* one-time init, only for memory state */
 static int ehci_init(struct usb_hcd *hcd)
 {
@@ -607,7 +619,14 @@ static int ehci_init(struct usb_hcd *hcd)
 	int			retval;
 	u32			hcc_params;
 	struct ehci_qh_hw	*hw;
-
+	char usb_env_name[] = "wmt.usb.param";
+	char usb_env_val[20] = "0";
+	int varlen = 20;	
+	
+	char usb_resume_env_name[] = "wmt.gpo.usb";
+	char usb_resume_env_val[80] = "0";
+	int varlen_resume = 80;	
+	
 	spin_lock_init(&ehci->lock);
 
 	/*
@@ -720,7 +739,37 @@ static int ehci_init(struct usb_hcd *hcd)
 		temp |= hird << 24;
 	}
 	ehci->command = temp;
+	
+	if(wmt_getsyspara(usb_env_name, usb_env_val, &varlen) == 0) {						
+			sscanf(usb_env_val,"%X:%X", &usb_param[0],&usb_param[1]);
+			//printk("usb_param[0]  =%x ,usb_param[1]=%x \n",usb_param[0],usb_param[1]);
+			if (usb_param[0] & 0x01) {	
+				if(usb_param[1] <= 0x03 ) {
+					usb_storage_id = usb_param[1]+1;	
+					//printk("usb_storage_id  =%x , it should be small than or equal  4 .\n",usb_storage_id);
+				} else {
+						usb_storage_id = 2;// default port B
+				}
+			} else {			
+				usb_storage_id=0;  //disable
+ 			}		
+	}	
+	
+	if(wmt_getsyspara(usb_resume_env_name, usb_resume_env_val, &varlen_resume) == 0) {						
+			sscanf(usb_resume_env_val,"%d:%X:%X:%X:%X:%X", &env_mos_gpio,&env_active,&env_bitmap,&env_ctraddr,&env_ocaddr,&env_odaddr);
 
+			if (env_active) {				
+				env_port = (env_active >> 4);
+				env_active &= 0x1;
+				env_ctraddr = ((env_ctraddr & 0xffffff) | 0xfe000000);
+				env_ocaddr = ((env_ocaddr & 0xffffff) | 0xfe000000);
+				env_odaddr = ((env_odaddr & 0xffffff) | 0xfe000000);				
+			}
+	} else
+		env_active = 0;
+
+	printk("env_mos_gpio=%d env_active =%x ,env_port=%x env_bitmap=%x env_ctraddr=%x env_ocaddr=%x env_odaddr=%x \n",env_mos_gpio,env_active,env_port,env_bitmap,env_ctraddr,env_ocaddr,env_odaddr);
+		
 	/* Accept arbitrarily long scatter-gather lists */
 	if (!(hcd->driver->flags & HCD_LOCAL_MEM))
 		hcd->self.sg_tablesize = ~0;

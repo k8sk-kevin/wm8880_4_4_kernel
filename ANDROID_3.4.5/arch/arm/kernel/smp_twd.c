@@ -26,6 +26,7 @@
 #include <asm/smp_twd.h>
 #include <asm/localtimer.h>
 #include <asm/hardware/gic.h>
+#include <mach/hardware.h>
 
 /* set up by the platform code */
 static void __iomem *twd_base;
@@ -104,7 +105,7 @@ static void twd_timer_stop(struct clock_event_device *clk)
  */
 static void twd_update_frequency(void *data)
 {
-	twd_timer_rate = clk_get_rate(twd_clk);
+	twd_timer_rate = (auto_pll_divisor(DEV_ARM, GET_CPUTIMER, 0, 0) / 2);
 
 	clockevents_update_freq(*__this_cpu_ptr(twd_evt), twd_timer_rate);
 }
@@ -121,7 +122,7 @@ static int twd_cpufreq_transition(struct notifier_block *nb,
 	 */
 	if (state == CPUFREQ_POSTCHANGE || state == CPUFREQ_RESUMECHANGE)
 		smp_call_function_single(freqs->cpu, twd_update_frequency,
-			NULL, 1);
+			data, 1);
 
 	return NOTIFY_OK;
 }
@@ -229,14 +230,7 @@ static int __cpuinit twd_timer_setup(struct clock_event_device *clk)
 {
 	struct clock_event_device **this_cpu_clk;
 
-	if (!twd_clk)
-		twd_clk = twd_get_clock();
-
-	if (!IS_ERR_OR_NULL(twd_clk))
-		twd_timer_rate = clk_get_rate(twd_clk);
-	else
-		twd_calibrate_rate();
-
+	twd_calibrate_rate();
 	__raw_writel(0, twd_base + TWD_TIMER_CONTROL);
 
 	clk->name = "local_timer";
@@ -281,6 +275,14 @@ static int __init twd_local_timer_common_register(void)
 	err = local_timer_register(&twd_lt_ops);
 	if (err)
 		goto out_irq;
+
+	if (!twd_clk)
+		twd_clk = twd_get_clock();
+
+	if (!IS_ERR_OR_NULL(twd_clk))
+		twd_timer_rate = clk_get_rate(twd_clk);
+	else
+		twd_calibrate_rate();
 
 	return 0;
 

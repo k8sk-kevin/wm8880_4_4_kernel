@@ -382,6 +382,60 @@ config DS1302
 
 endif # RTC_LIB
 
+config PWM_WMT
+	tristate "WMT PWM support"
+	depends on ARCH_WMT
+	---help---
+	  Say Y here if you want to enable PWM on WMT application processor.
+
+          To compile this driver as a module, choose M here: the
+	  module will be called wmt_pwm
+
+config WMT_GPIO
+	tristate "WMT GPIO support"
+	depends on ARCH_WMT
+	default y
+	---help---
+	  Say Y here if you want to enable WMT GPIO .
+
+          To compile this driver as a module, choose M here
+
+config WMT_VIBRATOR
+	tristate "WMT vibrator support"
+	depends on ARCH_WMT
+	default y
+	---help---
+	  Say Y here if you want to enable vibrator driver.
+
+          To compile this driver as a module, choose M here: the
+	  module will be called wmt_vibrate
+
+config WMT_EFUSE
+	tristate "WMT eFuse support"
+	depends on ARCH_WMT
+	default m
+	---help---
+	  Say Y or M here if you want to enable WMT eFuse in WMT SOC.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called s_wmt_efuse
+
+config CHARGE_SMB358
+        tristate "WMT SMB358 Charging-IC support"
+        depends on ARCH_WMT
+        default n
+        ---help---
+          Say Y here if you want to enable SMB358 charging IC driver.
+
+          To compile this driver as a module, choose M here: the
+          module will be called wmt_vibrate
+config WMT_EFUSE_STUB
+	tristate "WMT eFuse stub function support"
+	depends on ARCH_WMT
+	default y
+	---help---
+	  Support eFuse stub functions. 
+
 config DTLK
 	tristate "Double Talk PC internal speech card support"
 	depends on ISA

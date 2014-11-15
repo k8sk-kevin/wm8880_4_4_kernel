@@ -299,6 +299,15 @@ static int alarmtimer_suspend(struct device *dev)
 		__pm_wakeup_event(ws, 1 * MSEC_PER_SEC);
 	return ret;
 }
+
+extern void devalarm_triggered2(void);
+
+static int alarmtimer_resume(struct device *dev)
+{
+	devalarm_triggered2();
+	return 0;
+}
+
 #else
 static int alarmtimer_suspend(struct device *dev)
 {
@@ -766,6 +775,7 @@ out:
 /* Suspend hook structures */
 static const struct dev_pm_ops alarmtimer_pm_ops = {
 	.suspend = alarmtimer_suspend,
+	.resume = alarmtimer_resume,
 };
 
 static struct platform_driver alarmtimer_driver = {

@@ -159,6 +159,7 @@ config SND_DYNAMIC_MINORS
 
 config SND_SUPPORT_OLD_API
 	bool "Support old ALSA API"
+	select SND_HWDEP
 	default y
 	help
 	  Say Y here to support the obsolete ALSA PCM API (ver.0.9.0 rc3

@@ -639,7 +639,8 @@ static void soc_resume_deferred(struct work_struct *work)
 			container_of(work, struct snd_soc_card, deferred_resume_work);
 	struct snd_soc_codec *codec;
 	int i;
-
+	
+        int dbg_resume = 0;
 	/* our power state is still SNDRV_CTL_POWER_D3hot from suspend time,
 	 * so userspace apps are blocked from touching us
 	 */
@@ -674,12 +675,23 @@ static void soc_resume_deferred(struct work_struct *work)
 			case SND_SOC_BIAS_OFF:
 				codec->driver->resume(codec);
 				codec->suspended = 0;
+				dbg_resume = 1;
 				break;
 			default:
+				
 				dev_dbg(codec->dev, "CODEC was on over suspend\n");
 				break;
 			}
 		}
+	#if 1	
+		if (!dbg_resume && codec->driver->resume) //add for temp std 2014-3-24
+		{
+			dbg_resume = 1;
+			codec->driver->resume(codec);
+			codec->suspended = 0;
+			
+		}
+	#endif	
 	}
 
 	for (i = 0; i < card->num_rtd; i++) {
@@ -1718,24 +1730,247 @@ int snd_soc_poweroff(struct device *dev)
 EXPORT_SYMBOL_GPL(snd_soc_poweroff);
 
 const struct dev_pm_ops snd_soc_pm_ops = {
-	.suspend = snd_soc_suspend,
-	.resume = snd_soc_resume,
-	.freeze = snd_soc_suspend,
-	.thaw = snd_soc_resume,
-	.poweroff = snd_soc_poweroff,
-	.restore = snd_soc_resume,
+	.suspend = snd_soc_suspend, //PMSG_SUSPEND
+	.resume = snd_soc_resume, //
+	.freeze = snd_soc_suspend,  //PMSG_FREEZE
+	.thaw = snd_soc_resume,   //
+	.poweroff = snd_soc_poweroff, //PMSG_HIBERNATE
+	.restore = snd_soc_resume, //
 };
 EXPORT_SYMBOL_GPL(snd_soc_pm_ops);
+
+/*****add for std 2014-3-24*************/
+
+/* powers down audio subsystem for suspend */
+static int soc_suspend(struct platform_device *dev, pm_message_t state)
+{
+	struct snd_soc_card *card = platform_get_drvdata(dev);
+	struct snd_soc_codec *codec;
+	int i;
+	printk("<<<<<<<<%s, pm state: 0x%x\n", __func__, state.event);
+	
+	/* If the initialization of this soc device failed, there is no codec
+	 * associated with it. Just bail out in this case.
+	 */
+	if (list_empty(&card->codec_dev_list))
+		return 0;
+	
+#if 0	
+	mutex_lock(&std_pm_mutex);
+	if (std_dev_suspend)
+	{
+		mutex_unlock(&std_pm_mutex);
+		return 0;
+	}
+	std_pdev_suspend = 1;
+	mutex_unlock(&std_pm_mutex);
+
+	if (std_pdev_suspend)
+		return 0;
+	
+	std_pdev_suspend = 1;
+#endif		
+	/* Due to the resume being scheduled into a workqueue we could
+	* suspend before that's finished - wait for it to complete.
+	 */
+	
+	if (state.event==PM_EVENT_SUSPEND/*0x2*/ || state.event==PM_EVENT_FREEZE/*0x1*/){ //move from device_driver pm	
+	snd_power_lock(card->snd_card);
+	snd_power_wait(card->snd_card, SNDRV_CTL_POWER_D0);
+	snd_power_unlock(card->snd_card);
+
+	/* we're going to block userspace touching us until resume completes */
+	snd_power_change_state(card->snd_card, SNDRV_CTL_POWER_D3hot);
+
+	/* mute any active DACs */
+	for (i = 0; i < card->num_rtd; i++) {
+		struct snd_soc_dai *dai = card->rtd[i].codec_dai;
+		struct snd_soc_dai_driver *drv = dai->driver;
+
+		if (card->rtd[i].dai_link->ignore_suspend)
+			continue;
+
+		if (drv->ops->digital_mute && dai->playback_active)
+			drv->ops->digital_mute(dai, 1);
+	}
+
+	/* suspend all pcms */
+	for (i = 0; i < card->num_rtd; i++) {
+		if (card->rtd[i].dai_link->ignore_suspend)
+			continue;
+
+		snd_pcm_suspend_all(card->rtd[i].pcm);
+	}
+
+	if (card->suspend_pre)
+		card->suspend_pre(card);
+
+	for (i = 0; i < card->num_rtd; i++) {
+		struct snd_soc_dai *cpu_dai = card->rtd[i].cpu_dai;
+		struct snd_soc_platform *platform = card->rtd[i].platform;
+
+		if (card->rtd[i].dai_link->ignore_suspend)
+			continue;
+
+		if (cpu_dai->driver->suspend && !cpu_dai->driver->ac97_control)
+			cpu_dai->driver->suspend(cpu_dai);
+		if (platform->driver->suspend && !platform->suspended) {
+			platform->driver->suspend(cpu_dai);
+			platform->suspended = 1;
+		}
+	}
+
+	/* close any waiting streams and save state */
+	for (i = 0; i < card->num_rtd; i++) {
+		flush_delayed_work_sync(&card->rtd[i].delayed_work);
+		card->rtd[i].codec->dapm.suspend_bias_level = card->rtd[i].codec->dapm.bias_level;
+	}
+
+	for (i = 0; i < card->num_rtd; i++) {
+		struct snd_soc_dai *codec_dai = card->rtd[i].codec_dai;
+
+		if (card->rtd[i].dai_link->ignore_suspend)
+			continue;
+
+		snd_soc_dapm_stream_event(&card->rtd[i],
+					  SNDRV_PCM_STREAM_PLAYBACK,
+					  codec_dai,
+					  SND_SOC_DAPM_STREAM_SUSPEND);
+
+		snd_soc_dapm_stream_event(&card->rtd[i],
+					  SNDRV_PCM_STREAM_CAPTURE,
+					  codec_dai,
+					  SND_SOC_DAPM_STREAM_SUSPEND);
+	}
+
+	/* suspend all CODECs */
+	list_for_each_entry(codec, &card->codec_dev_list, card_list) {
+		/* If there are paths active then the CODEC will be held with
+		 * bias _ON and should not be suspended. */
+		if (!codec->suspended && codec->driver->suspend) {
+			switch (codec->dapm.bias_level) {
+			case SND_SOC_BIAS_STANDBY:
+				/*
+				 * If the CODEC is capable of idle
+				 * bias off then being in STANDBY
+				 * means it's doing something,
+				 * otherwise fall through.
+				 */
+				if (codec->dapm.idle_bias_off) {
+					dev_dbg(codec->dev,
+						"idle_bias_off CODEC on over suspend\n");
+					break;
+				}
+			case SND_SOC_BIAS_OFF:
+				codec->driver->suspend(codec);
+				codec->suspended = 1;
+				codec->cache_sync = 1;
+				break;
+			default:
+				dev_dbg(codec->dev, "CODEC is on over suspend\n");
+				break;
+			}
+		}
+	}
+
+	for (i = 0; i < card->num_rtd; i++) {
+		struct snd_soc_dai *cpu_dai = card->rtd[i].cpu_dai;
+
+		if (card->rtd[i].dai_link->ignore_suspend)
+			continue;
+
+		if (cpu_dai->driver->suspend && cpu_dai->driver->ac97_control)
+			cpu_dai->driver->suspend(cpu_dai);
+	}
+
+	if (card->suspend_post)
+		card->suspend_post(card);
+
+	return 0;
+     }
+	
+	if (state.event == PM_EVENT_HIBERNATE) { // 0x4
+		
+	/* Flush out pmdown_time work - we actually do want to run it
+	 * now, we're shutting down so no imminent restart. */
+		for (i = 0; i < card->num_rtd; i++) {
+			struct snd_soc_pcm_runtime *rtd = &card->rtd[i];
+			flush_delayed_work_sync(&rtd->delayed_work);
+		}
+
+		snd_soc_dapm_shutdown(card);
+
+		return 0;	
+		
+	}
+	
+	return 0;
+}
+
+/* powers up audio subsystem after a suspend */
+int soc_resume(struct platform_device *dev)
+{
+	struct snd_soc_card *card = platform_get_drvdata(dev);
+	int i, ac97_control = 0;
+	
+	printk("<<<<<%s\n", __func__);
+
+#if 0	
+	if (std_pdev_suspend)
+		std_pdev_suspend = 0;
+	else
+		return 0;
+#endif 		
+	/* If the initialization of this soc device failed, there is no codec
+	 * associated with it. Just bail out in this case.
+	 */
+	if (list_empty(&card->codec_dev_list))
+		return 0;
+#if 0	
+	mutex_lock(&std_pm_mutex);
+	if (std_dev_suspend)
+	{
+		mutex_unlock(&std_pm_mutex);
+		return 0;
+	}
+	std_pdev_suspend = 0;
+	mutex_unlock(&std_pm_mutex);
+#endif	
+	
+	/* AC97 devices might have other drivers hanging off them so
+	 * need to resume immediately.  Other drivers don't have that
+	 * problem and may take a substantial amount of time to resume
+	 * due to I/O costs and anti-pop so handle them out of line.
+	 */
+	for (i = 0; i < card->num_rtd; i++) {
+		struct snd_soc_dai *cpu_dai = card->rtd[i].cpu_dai;
+		ac97_control |= cpu_dai->driver->ac97_control;
+	}
+	if (ac97_control) {
+		dev_dbg(dev, "Resuming AC97 immediately\n");
+		soc_resume_deferred(&card->deferred_resume_work);
+	} else {
+		dev_dbg(dev, "Scheduling resume work\n");
+		if (!schedule_work(&card->deferred_resume_work))
+			dev_err(dev, "resume work item may be lost\n");
+	}
+
+	return 0;
+}
+
+/*********************************************/
 
 /* ASoC platform driver */
 static struct platform_driver soc_driver = {
 	.driver		= {
 		.name		= "soc-audio",
 		.owner		= THIS_MODULE,
-		.pm		= &snd_soc_pm_ops,
+		//.pm		= &snd_soc_pm_ops,
 	},
 	.probe		= soc_probe,
 	.remove		= soc_remove,
+	.suspend	= soc_suspend,
+	.resume		= soc_resume,
 };
 
 /**

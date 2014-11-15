@@ -162,6 +162,21 @@ static void __soft_restart(void *addr)
 	BUG();
 }
 
+void soft_restart_noirq(unsigned long addr)/*add by roger.*/
+{
+	u64 *stack = soft_restart_stack + ARRAY_SIZE(soft_restart_stack);
+
+	/* Disable the L2 if we're the last man standing. */
+	if (num_online_cpus() == 1)
+		outer_disable();
+
+	/* Change to the new stack and continue with the reset. */
+	call_with_stack(__soft_restart, (void *)addr, (void *)stack);
+
+	/* Should never get here. */
+	BUG();
+}
+
 void soft_restart(unsigned long addr)
 {
 	u64 *stack = soft_restart_stack + ARRAY_SIZE(soft_restart_stack);

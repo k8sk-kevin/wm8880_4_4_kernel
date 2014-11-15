@@ -14,4 +14,12 @@ config I2C_ALGOPCF
 config I2C_ALGOPCA
 	tristate "I2C PCA 9564 interfaces"
 
+config I2C_ALGOWMT
+        tristate "WMT I2C Algorithm"
+        depends on ARCH_WMT && I2C
+        help
+          This supports the use of the WMT I2C interface found on WMT
+          processors. Say Y if you have one of these. You should also say Y
+          for the WMT I2C peripheral driver support below.
+
 endmenu

@@ -1,0 +1,30 @@
+menuconfig MTK_MT5931_KK
+	bool "MediaTek MT5931 Config for android4.4"
+	help
+	  Config MTK WLAN chip mt5931
+
+
+config MTK_MT5931_WIFI_KK
+	tristate "MT5931 Wi-Fi for android4.4"
+	depends on MTK_MT5931_KK
+	depends on MMC
+	depends on IPV6
+	select WIRELESS_EXT
+	select WEXT_PRIV
+	default y
+	help
+	  This module adds support for wireless adapters based on
+	  MTK MT5931 chipset.
+
+	  This driver uses the kernel's wireless extensions subsystem.
+
+	  If you choose to build a module, it'll be called dhd. Say M if
+	  unsure.
+
+config MTK_MT5931_POWER_KK
+	tristate "MT5931 power for android4.4"
+	depends on MTK_MT5931_KK
+	default y
+	help
+	  MT5931 power control
+

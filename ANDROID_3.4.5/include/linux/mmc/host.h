@@ -15,6 +15,7 @@
 #include <linux/device.h>
 #include <linux/fault-inject.h>
 #include <linux/wakelock.h>
+#include <linux/semaphore.h>
 
 #include <linux/mmc/core.h>
 #include <linux/mmc/pm.h>
@@ -123,6 +124,8 @@ struct mmc_host_ops {
 	void	(*set_ios)(struct mmc_host *host, struct mmc_ios *ios);
 	int	(*get_ro)(struct mmc_host *host);
 	int	(*get_cd)(struct mmc_host *host);
+	int	 (*get_slot_status)(struct mmc_host *host);
+	void (*dump_host_regs)(struct mmc_host *host);
 
 	void	(*enable_sdio_irq)(struct mmc_host *host, int enable);
 
@@ -335,11 +338,24 @@ struct mmc_host {
 	} embedded_sdio_data;
 #endif
 
+#ifdef CONFIG_MMC_UNSAFE_RESUME
+	/* Use to record if the card attath staus change in suspend mode*/
+	int card_attath_status;
+
+#define card_attach_status_change 1
+#define card_attach_status_unchange 0
+#endif
+	/*Use to enable scan retry when request or cmd fail*/
+	int scan_retry;
+	bool card_scan_status; /*use to record if the card scan have done and card init OK 0:fail 1:OK*/
+	struct semaphore req_sema; /*use to handle request asynchronous, to prevent issue command in the same time*/
+	int wmt_host_index; /*use to identify the host number*/
+
 	unsigned long		private[0] ____cacheline_aligned;
 };
 
 extern struct mmc_host *mmc_alloc_host(int extra, struct device *);
-extern int mmc_add_host(struct mmc_host *);
+extern int mmc_add_host(struct mmc_host *, bool);
 extern void mmc_remove_host(struct mmc_host *);
 extern void mmc_free_host(struct mmc_host *);
 
@@ -382,6 +398,7 @@ extern int mmc_power_restore_host(struct mmc_host *host);
 
 extern void mmc_detect_change(struct mmc_host *, unsigned long delay);
 extern void mmc_request_done(struct mmc_host *, struct mmc_request *);
+extern void mmc_force_remove_card(struct mmc_host *host);
 
 extern int mmc_cache_ctrl(struct mmc_host *, u8);
 

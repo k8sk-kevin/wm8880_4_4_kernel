@@ -17,7 +17,7 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/sched.h>
+//#include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
@@ -26,7 +26,7 @@
 #include <linux/slab.h>
 #include <linux/time.h>
 #include "logger.h"
-
+#include <linux/posix-timers.h>
 #include <asm/ioctls.h>
 
 /*
@@ -82,6 +82,22 @@ size_t logger_offset(struct logger_log *log, size_t n)
  * file->logger_log. Thus what file->private_data points at depends on whether
  * or not the file was opened for reading. This function hides that dirtiness.
  */
+extern  struct k_clock posix_clocks[]; 
+
+/**
+ * Redirect Android logcat to uart0 if logcat_set != 0
+ */
+static int logcat_set;
+/*getThreadMsec - get the runtime of current thread, add by jay*/
+ uint32_t getThreadMsec(void)
+{
+
+	struct timespec tm;
+
+	posix_clocks[CLOCK_THREAD_CPUTIME_ID].clock_get(CLOCK_THREAD_CPUTIME_ID, &tm);
+	return tm.tv_sec * 1000LL + tm.tv_nsec / 1000000;
+}
+
 static inline struct logger_log *file_get_log(struct file *file)
 {
 	if (file->f_mode & FMODE_READ) {
@@ -415,9 +431,98 @@ static void do_write_log(struct logger_log *log, const void *buf, size_t count)
  * Returns 'count' on success, negative error code on failure.
  */
 static ssize_t do_write_log_from_user(struct logger_log *log,
-				      const void __user *buf, size_t count)
+				      const void __user *buf, size_t count, int seg)
 {
+	static int abnormal;
+	int i, s, str_len;
+	static struct logger_entry header;
+	static int label;
+	static char tag[20];
+	/* struct timespec now;//modified by essenzhang */
+	struct timeval now;
+	long threadtime;
 	size_t len;
+	if (logcat_set) {
+		switch (seg) {
+		case 2:
+			label = *((char *)buf);
+			abnormal = 0;
+
+			switch (label) {
+			case 2:
+				label = 'V';
+				break; /* VERBOSE */
+			case 3:
+				label = 'D';
+				break; /* DEBUG */
+			case 4:
+				label = 'I';
+				break; /* INFO */
+			case 5:
+				label = 'W';
+				break; /* WARN */
+			case 6:
+				label = 'E';
+				break; /* ERROR */
+			case 7:
+				label = 'A';
+				break; /* ASSERT */
+			default:
+				abnormal = 1;
+				break;
+			}
+			/* now = current_kernel_time();//modified by essenzhang */
+			do_gettimeofday(&now);
+
+			threadtime = getThreadMsec(); /* add by jay */
+
+			header.pid = current->tgid;
+			header.tid = current->pid;
+			/*
+			//header.sec = now.tv_sec;
+			//header.nsec = now.tv_nsec;//modified by essenzhang
+			*/
+			header.sec = now.tv_sec;
+			header.nsec = now.tv_usec*1000;
+
+			header.thread_msec = threadtime; /* add by jay */
+			break;
+		case 1:
+			if (!abnormal)
+				memcpy(tag, buf, count);
+			tag[16] = 0;
+			break;
+		case 0:
+			if (!abnormal) {
+				abnormal = 1;
+
+				for (i = 0, s = 0, str_len = 0 ; i < count ; i++) {
+					str_len++;
+					if (*((char *)buf+i) == 0) {
+						if (str_len > 1) {
+							if (logcat_set == 1)
+								printk(KERN_INFO "%c/%16s(%5d): %s\n", label, tag, header.pid, ((char *)buf+s));
+							else if (logcat_set == 2)
+								printk(KERN_INFO "%06d.%06d %c/%16s(%5d): %s\n", header.sec%1000000, header.nsec/1000, label, tag, header.pid, ((char *)buf+s));
+						}
+						str_len = 0;
+					} else if ((*((char *)buf+i) == 0xa) && (i != count-1)) {
+						*((char *)buf+i) = 0;
+						if (str_len > 1) {
+							if (logcat_set == 1)
+								printk(KERN_INFO "%c/%16s(%5d): %s\n", label, tag, header.pid, ((char *)buf+s));
+							else if (logcat_set == 2)
+								printk(KERN_INFO "%06d.%06d %c/%16s(%5d): %s\n", header.sec%1000000, header.nsec/1000, label, tag, header.pid, ((char *)buf+s));
+						}
+						s = i+1;
+						str_len = 0;
+					}
+				}
+			}
+			break;
+		}
+		return count;
+	}
 
 	len = min(count, log->size - log->w_off);
 	if (len && copy_from_user(log->buffer + log->w_off, buf, len))
@@ -449,16 +554,41 @@ ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	struct logger_log *log = file_get_log(iocb->ki_filp);
 	size_t orig = log->w_off;
 	struct logger_entry header;
-	struct timespec now;
+	/* //struct timespec now;//modified by essenzhang */
+	struct timeval now;
+	long threadtime;
 	ssize_t ret = 0;
 
-	now = current_kernel_time();
+	if (logcat_set) {
+		mutex_lock(&log->mutex);
+		while (nr_segs-- > 0) {
+			ssize_t nr;
+
+			/* write out this segment's payload */
+			nr = do_write_log_from_user(log, iov->iov_base, iov->iov_len, nr_segs);
+
+			iov++;
+			ret += nr;
+		}
+		mutex_unlock(&log->mutex);
+		return ret;
+	}
+	/* //now = current_kernel_time();//modified by essenzhang */
+       do_gettimeofday(&now); 
+      
+	threadtime = getThreadMsec(); /* add by jay */
 
 	header.pid = current->tgid;
 	header.tid = current->pid;
-	header.sec = now.tv_sec;
-	header.nsec = now.tv_nsec;
+	/*
+	//header.sec = now.tv_sec;
+	//header.nsec = now.tv_nsec;//modified by essenzhang
+	*/
+    header.sec = now.tv_sec;
+	header.nsec = now.tv_usec*1000;
+
 	header.euid = current_euid();
+	header.thread_msec = threadtime; /*add by jay */
 	header.len = min_t(size_t, iocb->ki_left, LOGGER_ENTRY_MAX_PAYLOAD);
 	header.hdr_size = sizeof(struct logger_entry);
 
@@ -486,7 +616,7 @@ ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 		len = min_t(size_t, iov->iov_len, header.len - ret);
 
 		/* write out this segment's payload */
-		nr = do_write_log_from_user(log, iov->iov_base, len);
+		nr = do_write_log_from_user(log, iov->iov_base, len, nr_segs);
 		if (unlikely(nr < 0)) {
 			log->w_off = orig;
 			mutex_unlock(&log->mutex);
@@ -699,7 +829,7 @@ static long logger_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return ret;
 }
 
-static const struct file_operations logger_fops = {
+static struct file_operations logger_fops = {
 	.owner = THIS_MODULE,
 	.read = logger_read,
 	.aio_write = logger_aio_write,
@@ -735,8 +865,8 @@ static struct logger_log VAR = { \
 
 DEFINE_LOGGER_DEVICE(log_main, LOGGER_LOG_MAIN, 256*1024)
 DEFINE_LOGGER_DEVICE(log_events, LOGGER_LOG_EVENTS, 256*1024)
-DEFINE_LOGGER_DEVICE(log_radio, LOGGER_LOG_RADIO, 256*1024)
-DEFINE_LOGGER_DEVICE(log_system, LOGGER_LOG_SYSTEM, 256*1024)
+DEFINE_LOGGER_DEVICE(log_radio, LOGGER_LOG_RADIO, 64*1024)
+/* DEFINE_LOGGER_DEVICE(log_system, LOGGER_LOG_SYSTEM, 256*1024) */
 
 static struct logger_log *get_log_from_minor(int minor)
 {
@@ -746,8 +876,8 @@ static struct logger_log *get_log_from_minor(int minor)
 		return &log_events;
 	if (log_radio.misc.minor == minor)
 		return &log_radio;
-	if (log_system.misc.minor == minor)
-		return &log_system;
+/*	if (log_system.misc.minor == minor) //by eason
+		return &log_system; */
 	return NULL;
 }
 
@@ -772,6 +902,21 @@ static int __init logger_init(void)
 {
 	int ret;
 
+	extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+	char logcat_name[] = "wmt.logcat.param";
+	char logcat_val[20] = "0";
+	int varlen = 20, enable = 0xff, setting = 0xff;
+
+	/**
+	 * wmt.logcat.param = 1:0 ==> logcat (logcat_set = 1)
+	 * wmt.logcat.param = 1:1 ==> logcat -v time  (logcat_set = 2)
+	 */
+	if (wmt_getsyspara(logcat_name, logcat_val, &varlen) == 0) {
+		sscanf(logcat_val, "%x:%x", &enable, &setting);
+		if (enable & 1)
+			logcat_set = setting + 1;
+	}
+	printk(KERN_INFO "log enable:%X, setting:%X\n", enable, setting);
 	ret = init_log(&log_main);
 	if (unlikely(ret))
 		goto out;
@@ -784,9 +929,9 @@ static int __init logger_init(void)
 	if (unlikely(ret))
 		goto out;
 
-	ret = init_log(&log_system);
+/*	ret = init_log(&log_system);
 	if (unlikely(ret))
-		goto out;
+		goto out;*/
 
 out:
 	return ret;

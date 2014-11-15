@@ -25,6 +25,7 @@
 #include <linux/pm.h>
 #include <linux/slab.h>
 #include <linux/lzo.h>
+#include <linux/lz4.h>
 #include <linux/vmalloc.h>
 #include <linux/cpumask.h>
 #include <linux/atomic.h>
@@ -32,8 +33,14 @@
 #include <linux/crc32.h>
 
 #include "power.h"
+#include <mach/hardware.h>
 
 #define HIBERNATE_SIG	"S1SUSPEND"
+#define _DISABLE_CRC_THREAD_ 1 /*disable crc check for better performance*/
+/*#undef _DISABLE_CRC_THREAD_ */
+
+#define COMPRESS_MODE_LZ4 1	/*change compress mode from lzo to lz4 */
+extern int WMT_WAKE_UP_EVENT;
 
 /*
  *	The swap map is a data structure used for keeping track of each page
@@ -245,7 +252,7 @@ static int mark_swapfiles(struct swap_map_handle *handle, unsigned int flags)
  *
  *	This is called before saving image
  */
-static int swsusp_swap_check(void)
+int swsusp_swap_check(void)
 {
 	int res;
 
@@ -401,6 +408,13 @@ static int swap_writer_finish(struct swap_map_handle *handle,
 		flush_swap_writer(handle);
 		printk(KERN_INFO "PM: S");
 		error = mark_swapfiles(handle, flags);
+		/*
+		  FIXME:
+		  Image Mark S1SUSPEND is not saved to disk unless do flush_swap_writer again.
+		  The root cause is unknown yet.
+		*/
+		flush_swap_writer(handle);
+
 		printk("|\n");
 	}
 
@@ -416,21 +430,31 @@ static int swap_writer_finish(struct swap_map_handle *handle,
 #define LZO_HEADER	sizeof(size_t)
 
 /* Number of pages/bytes we'll compress at one time. */
-#define LZO_UNC_PAGES	32
+#define LZO_UNC_PAGES	256 /*32:orginal.*/
 #define LZO_UNC_SIZE	(LZO_UNC_PAGES * PAGE_SIZE)
 
 /* Number of pages/bytes we need for compressed data (worst case). */
+#ifdef COMPRESS_MODE_LZ4
+
+#define LZO_CMP_PAGES	DIV_ROUND_UP(lz4_worst_compress(LZO_UNC_SIZE) + \
+				LZO_HEADER, PAGE_SIZE)
+
+#else
+
 #define LZO_CMP_PAGES	DIV_ROUND_UP(lzo1x_worst_compress(LZO_UNC_SIZE) + \
-			             LZO_HEADER, PAGE_SIZE)
+				LZO_HEADER, PAGE_SIZE)
+#endif
+
 #define LZO_CMP_SIZE	(LZO_CMP_PAGES * PAGE_SIZE)
 
 /* Maximum number of threads for compression/decompression. */
 #define LZO_THREADS	3
 
+/* Buffer are divided into blocks, orginally only 1 block.*/
+#define LZO_BUF_BLOCK_NUM (2) 	
 /* Minimum/maximum number of pages for read buffering. */
-#define LZO_MIN_RD_PAGES	1024
-#define LZO_MAX_RD_PAGES	8192
-
+#define LZO_MIN_RD_PAGES	1024	/*org: 1024 */
+#define LZO_MAX_RD_PAGES	1024	/*original size :8192 */
 
 /**
  *	save_image - save the suspend image data
@@ -541,7 +565,8 @@ struct cmp_data {
 /**
  * Compression function that runs in its own thread.
  */
-static int lzo_compress_threadfn(void *data)
+#ifdef COMPRESS_MODE_LZ4
+static int lz4_compress_threadfn(void *data)
 {
 	struct cmp_data *d = data;
 
@@ -557,6 +582,28 @@ static int lzo_compress_threadfn(void *data)
 		}
 		atomic_set(&d->ready, 0);
 
+		d->ret = lz4_compress(d->unc, d->unc_len,
+				      d->cmp + LZO_HEADER, &d->cmp_len, d->wrk);
+		atomic_set(&d->stop, 1);
+		wake_up(&d->done);
+	}
+	return 0;
+}
+#else
+static int lzo_compress_threadfn(void *data)
+{
+	struct cmp_data *d = data;
+	while (1) {
+		wait_event(d->go, atomic_read(&d->ready) ||
+			   kthread_should_stop());
+		if (kthread_should_stop()) {
+			d->thr = NULL;
+			d->ret = -1;
+			atomic_set(&d->stop, 1);
+			wake_up(&d->done);
+			break;
+		}
+		atomic_set(&d->ready, 0);
 		d->ret = lzo1x_1_compress(d->unc, d->unc_len,
 		                          d->cmp + LZO_HEADER, &d->cmp_len,
 		                          d->wrk);
@@ -565,6 +612,7 @@ static int lzo_compress_threadfn(void *data)
 	}
 	return 0;
 }
+#endif
 
 /**
  * save_image_lzo - Save the suspend image data compressed with LZO.
@@ -572,13 +620,14 @@ static int lzo_compress_threadfn(void *data)
  * @snapshot: Image to read data from.
  * @nr_to_write: Number of pages to save.
  */
-static int save_image_lzo(struct swap_map_handle *handle,
-                          struct snapshot_handle *snapshot,
-                          unsigned int nr_to_write)
+static int save_image_compress(struct swap_map_handle *handle,
+			       struct snapshot_handle *snapshot,
+			       unsigned int nr_to_write)
 {
 	unsigned int m;
 	int ret = 0;
 	int nr_pages;
+	int nr_pages_write=0;//record image size after compression.
 	int err2;
 	struct bio *bio;
 	struct timeval start;
@@ -588,12 +637,13 @@ static int save_image_lzo(struct swap_map_handle *handle,
 	unsigned char *page = NULL;
 	struct cmp_data *data = NULL;
 	struct crc_data *crc = NULL;
+	unsigned int pmc_temp;
 
 	/*
 	 * We'll limit the number of threads for compression to limit memory
 	 * footprint.
 	 */
-	nr_threads = num_online_cpus() - 1;
+	nr_threads = num_online_cpus() - 1; /*original: num_online_cpus() - 1*/
 	nr_threads = clamp_val(nr_threads, 1, LZO_THREADS);
 
 	page = (void *)__get_free_page(__GFP_WAIT | __GFP_HIGH);
@@ -627,9 +677,16 @@ static int save_image_lzo(struct swap_map_handle *handle,
 		init_waitqueue_head(&data[thr].go);
 		init_waitqueue_head(&data[thr].done);
 
+#ifdef COMPRESS_MODE_LZ4
+		data[thr].thr = kthread_run(lz4_compress_threadfn,
+					    &data[thr],
+					    "image_compress/%u", thr);
+#else
 		data[thr].thr = kthread_run(lzo_compress_threadfn,
-		                            &data[thr],
-		                            "image_compress/%u", thr);
+					    &data[thr],
+					    "image_compress/%u", thr);
+#endif
+
 		if (IS_ERR(data[thr].thr)) {
 			data[thr].thr = NULL;
 			printk(KERN_ERR
@@ -637,8 +694,10 @@ static int save_image_lzo(struct swap_map_handle *handle,
 			ret = -ENOMEM;
 			goto out_clean;
 		}
+		printk(KERN_CRIT"%s:kthread:image_compress/%u:cpu:%d:pid:%d\n", __FUNCTION__,
+				thr, data[thr].thr->on_cpu, data[thr].thr->pid);
 	}
-
+#ifndef _DISABLE_CRC_THREAD_
 	/*
 	 * Start the CRC32 thread.
 	 */
@@ -659,14 +718,16 @@ static int save_image_lzo(struct swap_map_handle *handle,
 		ret = -ENOMEM;
 		goto out_clean;
 	}
-
+	printk(KERN_CRIT"%s:kthread:image_crc32:cpu:%d:pid:%d\n", __FUNCTION__,
+			crc->thr->on_cpu, crc->thr->pid);
+#endif	
 	/*
 	 * Adjust the number of required free pages after all allocations have
 	 * been done. We don't want to run out of pages when writing.
 	 */
 	handle->reqd_free_pages = reqd_free_pages();
 
-	printk(KERN_INFO
+	printk(KERN_CRIT
 		"PM: Using %u thread(s) for compression.\n"
 		"PM: Compressing and saving image data (%u pages) ...     ",
 		nr_threads, nr_to_write);
@@ -688,6 +749,9 @@ static int save_image_lzo(struct swap_map_handle *handle,
 
 				memcpy(data[thr].unc + off,
 				       data_of(*snapshot), PAGE_SIZE);
+				
+				swsusp_free_page(data_of(*snapshot));
+
 
 				if (!(nr_pages % m))
 					printk(KERN_CONT "\b\b\b\b%3d%%",
@@ -705,11 +769,21 @@ static int save_image_lzo(struct swap_map_handle *handle,
 
 		if (!thr)
 			break;
-
+		if ((nr_pages / m)%5 == 0) {
+			WMT_WAKE_UP_EVENT = 0;
+			pmc_temp = PMWS_VAL;
+			pmc_temp &= (WK_TRG_EN_VAL | 0x4000);
+			WMT_WAKE_UP_EVENT = (PMWS_VAL & (WK_TRG_EN_VAL | 0x4000));//wmt_pm_enter
+			if (pmc_temp == 0x4000) {
+				ret = -STD_USER_ABORT;
+				goto out_finish;
+			}
+		}
+	#ifndef _DISABLE_CRC_THREAD_
 		crc->run_threads = thr;
 		atomic_set(&crc->ready, 1);
 		wake_up(&crc->go);
-
+	#endif
 		for (run_threads = thr, thr = 0; thr < run_threads; thr++) {
 			wait_event(data[thr].done,
 			           atomic_read(&data[thr].stop));
@@ -721,10 +795,13 @@ static int save_image_lzo(struct swap_map_handle *handle,
 				printk(KERN_ERR "PM: LZO compression failed\n");
 				goto out_finish;
 			}
-
-			if (unlikely(!data[thr].cmp_len ||
-			             data[thr].cmp_len >
-			             lzo1x_worst_compress(data[thr].unc_len))) {
+			if (unlikely(!data[thr].cmp_len || data[thr].cmp_len >
+#ifdef COMPRESS_MODE_LZ4
+				     lz4_worst_compress(data[thr].unc_len)
+#else
+				     lzo1x_worst_compress(data[thr].unc_len)
+#endif
+			    )) {
 				printk(KERN_ERR
 				       "PM: Invalid LZO compressed length\n");
 				ret = -1;
@@ -749,11 +826,13 @@ static int save_image_lzo(struct swap_map_handle *handle,
 				ret = swap_write_page(handle, page, &bio);
 				if (ret)
 					goto out_finish;
+				nr_pages_write++;//one page saved to disk, count++
 			}
 		}
-
+	#ifndef _DISABLE_CRC_THREAD_
 		wait_event(crc->done, atomic_read(&crc->stop));
 		atomic_set(&crc->stop, 0);
+	#endif
 	}
 
 out_finish:
@@ -763,6 +842,7 @@ out_finish:
 		ret = err2;
 	if (!ret) {
 		printk(KERN_CONT "\b\b\b\bdone\n");
+		printk(KERN_CRIT "\n!!! Image After Compress: %lu MB\n", nr_pages_write*PAGE_SIZE>>20);
 	} else {
 		printk(KERN_CONT "\n");
 	}
@@ -845,8 +925,8 @@ int swsusp_write(unsigned int flags)
 	error = swap_write_page(&handle, header, NULL);
 	if (!error) {
 		error = (flags & SF_NOCOMPRESS_MODE) ?
-			save_image(&handle, &snapshot, pages - 1) :
-			save_image_lzo(&handle, &snapshot, pages - 1);
+		    save_image(&handle, &snapshot, pages - 1) :
+		    save_image_compress(&handle, &snapshot, pages - 1);
 	}
 out_finish:
 	error = swap_writer_finish(&handle, flags, error);
@@ -960,7 +1040,10 @@ static int swap_reader_finish(struct swap_map_handle *handle)
  *	@handle and the snapshot handle @snapshot
  *	(assume there are @nr_pages pages to load)
  */
-
+#ifdef _PRINT_PAGE_CRC_
+extern 
+int is_original_addr;//flag to indicate if buffer address is the origianl or not.
+#endif
 static int load_image(struct swap_map_handle *handle,
                       struct snapshot_handle *snapshot,
                       unsigned int nr_to_read)
@@ -972,6 +1055,11 @@ static int load_image(struct swap_map_handle *handle,
 	struct bio *bio;
 	int err2;
 	unsigned nr_pages;
+	#ifdef _PRINT_PAGE_CRC_//add by roger.
+	unsigned long crc_le;
+	unsigned char *virt_addr;
+	unsigned long pfn;
+	#endif
 
 	printk(KERN_INFO "PM: Loading image data pages (%u pages) ...     ",
 		nr_to_read);
@@ -985,6 +1073,13 @@ static int load_image(struct swap_map_handle *handle,
 		ret = snapshot_write_next(snapshot);
 		if (ret <= 0)
 			break;
+	#ifdef _PRINT_PAGE_CRC_
+	//	snapshot->sync_read = 1;//for page crc debug..
+	#endif
+	if(snapshot->sync_read){/*test for improve read speed.*/
+		//printk("\n!!! sync_read!!!\n");
+		//snapshot->sync_read = 0;
+	}
 		ret = swap_read_page(handle, data_of(*snapshot), &bio);
 		if (ret)
 			break;
@@ -992,8 +1087,19 @@ static int load_image(struct swap_map_handle *handle,
 			ret = hib_wait_on_bio_chain(&bio);
 		if (ret)
 			break;
-		if (!(nr_pages % m))
-			printk("\b\b\b\b%3d%%", nr_pages / m);
+#ifdef _PRINT_PAGE_CRC_// add by roger.
+			if(is_original_addr){
+				virt_addr = data_of(*snapshot);
+				pfn  = page_to_pfn(virt_to_page(virt_addr));
+				crc_le = crc32_le(0, virt_addr, PAGE_SIZE);
+				printk("pfn:%lu:phy_addr:0x%x:crc:%lu:virt_addr:0x%x\n",
+							pfn, pfn*PAGE_SIZE, crc_le, virt_addr);
+			}	
+#else
+			if (!(nr_pages % m))
+				printk("\b\b\b\b%3d%%", nr_pages / m);
+#endif	
+
 		nr_pages++;
 	}
 	err2 = hib_wait_on_bio_chain(&bio);
@@ -1030,7 +1136,8 @@ struct dec_data {
 /**
  * Deompression function that runs in its own thread.
  */
-static int lzo_decompress_threadfn(void *data)
+#ifdef COMPRESS_MODE_LZ4
+static int lz4_decompress_threadfn(void *data)
 {
 	struct dec_data *d = data;
 
@@ -1047,6 +1154,31 @@ static int lzo_decompress_threadfn(void *data)
 		atomic_set(&d->ready, 0);
 
 		d->unc_len = LZO_UNC_SIZE;
+		d->ret =
+		    lz4_decompress_unknownoutputsize(d->cmp + LZO_HEADER,
+						     d->cmp_len, d->unc,
+						     &d->unc_len);
+		atomic_set(&d->stop, 1);
+		wake_up(&d->done);
+	}
+	return 0;
+}
+#else
+static int lzo_decompress_threadfn(void *data)
+{
+	struct dec_data *d = data;
+	while (1) {
+		wait_event(d->go, atomic_read(&d->ready) ||
+			   kthread_should_stop());
+		if (kthread_should_stop()) {
+			d->thr = NULL;
+			d->ret = -1;
+			atomic_set(&d->stop, 1);
+			wake_up(&d->done);
+			break;
+		}
+		atomic_set(&d->ready, 0);
+		d->unc_len = LZO_UNC_SIZE;
 		d->ret = lzo1x_decompress_safe(d->cmp + LZO_HEADER, d->cmp_len,
 		                               d->unc, &d->unc_len);
 		atomic_set(&d->stop, 1);
@@ -1054,6 +1186,7 @@ static int lzo_decompress_threadfn(void *data)
 	}
 	return 0;
 }
+#endif
 
 /**
  * load_image_lzo - Load compressed image data and decompress them with LZO.
@@ -1061,7 +1194,7 @@ static int lzo_decompress_threadfn(void *data)
  * @snapshot: Image to copy uncompressed data into.
  * @nr_to_read: Number of pages to load.
  */
-static int load_image_lzo(struct swap_map_handle *handle,
+static int load_image_compress(struct swap_map_handle *handle,
                           struct snapshot_handle *snapshot,
                           unsigned int nr_to_read)
 {
@@ -1080,12 +1213,19 @@ static int load_image_lzo(struct swap_map_handle *handle,
 	unsigned char **page = NULL;
 	struct dec_data *data = NULL;
 	struct crc_data *crc = NULL;
-
+	#ifdef _PRINT_PAGE_CRC_
+	unsigned long crc_le;
+	unsigned char *virt_addr;
+	unsigned long pfn;
+	#endif
+	static unsigned long out_of_data;
+	static unsigned long wait_on_bio;
 	/*
 	 * We'll limit the number of threads for decompression to limit memory
 	 * footprint.
 	 */
-	nr_threads = num_online_cpus() - 1;
+	//nr_threads = num_online_cpus() - 1;
+	nr_threads = num_online_cpus();//test multi-thread.
 	nr_threads = clamp_val(nr_threads, 1, LZO_THREADS);
 
 	page = vmalloc(sizeof(*page) * LZO_MAX_RD_PAGES);
@@ -1119,9 +1259,15 @@ static int load_image_lzo(struct swap_map_handle *handle,
 		init_waitqueue_head(&data[thr].go);
 		init_waitqueue_head(&data[thr].done);
 
+#ifdef COMPRESS_MODE_LZ4
+		data[thr].thr = kthread_run(lz4_decompress_threadfn,
+					    &data[thr],
+					    "image_decompress/%u", thr);
+#else
 		data[thr].thr = kthread_run(lzo_decompress_threadfn,
 		                            &data[thr],
 		                            "image_decompress/%u", thr);
+#endif
 		if (IS_ERR(data[thr].thr)) {
 			data[thr].thr = NULL;
 			printk(KERN_ERR
@@ -1130,7 +1276,7 @@ static int load_image_lzo(struct swap_map_handle *handle,
 			goto out_clean;
 		}
 	}
-
+#ifndef _DISABLE_CRC_THREAD_
 	/*
 	 * Start the CRC32 thread.
 	 */
@@ -1151,7 +1297,7 @@ static int load_image_lzo(struct swap_map_handle *handle,
 		ret = -ENOMEM;
 		goto out_clean;
 	}
-
+#endif
 	/*
 	 * Set the number of pages for read buffering.
 	 * This is complete guesswork, because we'll only know the real
@@ -1161,6 +1307,8 @@ static int load_image_lzo(struct swap_map_handle *handle,
 	 */
 	if (low_free_pages() > snapshot_get_image_size())
 		read_pages = (low_free_pages() - snapshot_get_image_size()) / 2;
+	printk("\n!!! read_pages:%lu:low_free_pages:%lu:image_size:%lu\n",
+				read_pages, low_free_pages(), snapshot_get_image_size());
 	read_pages = clamp_val(read_pages, LZO_MIN_RD_PAGES, LZO_MAX_RD_PAGES);
 
 	for (i = 0; i < read_pages; i++) {
@@ -1226,7 +1374,7 @@ static int load_image_lzo(struct swap_map_handle *handle,
 		if (!have) {
 			if (!asked)
 				break;
-
+			out_of_data++;
 			ret = hib_wait_on_bio_chain(&bio);
 			if (ret)
 				goto out_finish;
@@ -1235,18 +1383,22 @@ static int load_image_lzo(struct swap_map_handle *handle,
 			if (eof)
 				eof = 2;
 		}
-
+		#ifndef _DISABLE_CRC_THREAD_
 		if (crc->run_threads) {
 			wait_event(crc->done, atomic_read(&crc->stop));
 			atomic_set(&crc->stop, 0);
 			crc->run_threads = 0;
 		}
-
+		#endif
 		for (thr = 0; have && thr < nr_threads; thr++) {
 			data[thr].cmp_len = *(size_t *)page[pg];
-			if (unlikely(!data[thr].cmp_len ||
-			             data[thr].cmp_len >
-			             lzo1x_worst_compress(LZO_UNC_SIZE))) {
+			if (unlikely(!data[thr].cmp_len || data[thr].cmp_len >
+#ifdef COMPRESS_MODE_LZ4
+				     lz4_worst_compress(LZO_UNC_SIZE)
+#else
+				     lzo1x_worst_compress(LZO_UNC_SIZE)
+#endif
+			    )) {
 				printk(KERN_ERR
 				       "PM: Invalid LZO compressed length\n");
 				ret = -1;
@@ -1282,6 +1434,7 @@ static int load_image_lzo(struct swap_map_handle *handle,
 		 * Wait for more data while we are decompressing.
 		 */
 		if (have < LZO_CMP_PAGES && asked) {
+			wait_on_bio++;
 			ret = hib_wait_on_bio_chain(&bio);
 			if (ret)
 				goto out_finish;
@@ -1318,30 +1471,45 @@ static int load_image_lzo(struct swap_map_handle *handle,
 				memcpy(data_of(*snapshot),
 				       data[thr].unc + off, PAGE_SIZE);
 
-				if (!(nr_pages % m))
-					printk("\b\b\b\b%3d%%", nr_pages / m);
+				#ifdef _PRINT_PAGE_CRC_// add by roger.
+					if(is_original_addr){
+						virt_addr = data_of(*snapshot);
+						pfn  = page_to_pfn(virt_to_page(virt_addr));
+						crc_le = crc32_le(0, virt_addr, PAGE_SIZE);
+						printk("pfn:%lu:phy_addr:0x%x:crc:%lu:virt_addr:0x%x\n",
+								pfn, pfn*PAGE_SIZE, crc_le, virt_addr);
+					}
+				#else
+					if (!(nr_pages % m))
+						printk("\b\b\b\b%3d%%", nr_pages / m);
+				#endif
 				nr_pages++;
 
 				ret = snapshot_write_next(snapshot);
 				if (ret <= 0) {
+				#ifndef _DISABLE_CRC_THREAD_
 					crc->run_threads = thr + 1;
 					atomic_set(&crc->ready, 1);
 					wake_up(&crc->go);
+				#endif
 					goto out_finish;
 				}
 			}
 		}
-
+	#ifndef _DISABLE_CRC_THREAD_
 		crc->run_threads = thr;
 		atomic_set(&crc->ready, 1);
 		wake_up(&crc->go);
+	#endif
 	}
 
 out_finish:
+#ifndef _DISABLE_CRC_THREAD_
 	if (crc->run_threads) {
 		wait_event(crc->done, atomic_read(&crc->stop));
 		atomic_set(&crc->stop, 0);
 	}
+#endif	
 	do_gettimeofday(&stop);
 	if (!ret) {
 		printk("\b\b\b\bdone\n");
@@ -1349,6 +1517,7 @@ out_finish:
 		if (!snapshot_image_loaded(snapshot))
 			ret = -ENODATA;
 		if (!ret) {
+		#ifndef _DISABLE_CRC_THREAD_
 			if (swsusp_header->flags & SF_CRC32_MODE) {
 				if(handle->crc32 != swsusp_header->crc32) {
 					printk(KERN_ERR
@@ -1356,10 +1525,15 @@ out_finish:
 					ret = -ENODATA;
 				}
 			}
+		#endif
 		}
 	} else
 		printk("\n");
 	swsusp_show_speed(&start, &stop, nr_to_read, "Read");
+#if 0
+	printk("\nout_of_data:%lu:wait_on_bio:%lu\n",
+				out_of_data, wait_on_bio);
+#endif
 out_clean:
 	for (i = 0; i < ring_size; i++)
 		free_page((unsigned long)page[i]);
@@ -1377,6 +1551,412 @@ out_clean:
 	if (page) vfree(page);
 
 	return ret;
+}
+
+/*
+   based on load_image_lzo
+   no crc thread
+   use dual buffer to make IO / Lzo more parallize
+
+*/
+/*
+	buffer status definition:
+	u8 stat:
+	7 ...4	: 3.. 0 
+	buffer 0	: buffer 1
+	stat value :
+	0 --> empty 		(or only submit bio request)
+	1 --> filled full		(after wait_on_io return)
+	2 --> almost empty	(not enough for filling lzo thread input buffer)
+	for example: 0x00 means buffer 0 and buffer 1 are both empty.
+
+	state machine:
+change state condition	| current state |  what is going to do
+		init				0x00		request to fill buf 0, wait on io for it to finish.
+   buf 0 full				0x10		run lzo thread on buf 0, request to fill buf 1(if not requested before)
+   buf 0 almost empty		0x20		wait on io for buf 1 to finish.
+   buf 1 full				0x21		run lzo thread, which will consume all data in buf 0
+   buf 0 empty				0x01		run lzo thread on buf 1, request to fill buf 0 (if not requested before)
+   buf 1 almost empty		0x02		wait on io for buf 0 to finish
+   buf 0 full				0x12		run lzo thread, which will consume all data in buf 1
+   buf 1 empty				0x10		go back to previous.
+
+*/
+typedef enum {
+ 		BOTH_EMPTY = 0,		/* 0x00 */
+		ONE_FULL,			/* 0x10 or 0x01 */
+		ONE_ALMOST_EMPTY,	/* 0x20 or 0x02 */
+		ANOTHER_FULL		/* 0x21 or 0x12 */
+}buf_state;
+
+static int load_image_compress_dualbuf(struct swap_map_handle *handle,
+                          struct snapshot_handle *snapshot,
+                          unsigned int nr_to_read)
+{
+
+	unsigned int m;
+	int ret = 0;
+	int eof = 0;
+	struct bio *bio;
+	struct timeval start;
+	struct timeval stop;
+	unsigned nr_pages;
+	size_t off;
+	unsigned i, thr, run_threads, nr_threads;
+	unsigned ring = 0, pg = 0, ring_size = 0,
+			 have = 0, want, need, asked = 0;
+	unsigned long read_pages = 0;
+	unsigned char **page = NULL;
+	struct dec_data *data = NULL;
+
+	buf_state buffer_stat = BOTH_EMPTY;
+	int reminder = 0;
+	size_t next_cmp_len = 0;
+
+	/*
+	 * We'll limit the number of threads for decompression to limit memory
+	 * footprint.
+	 */
+	nr_threads = num_online_cpus() - 1;
+	nr_threads = clamp_val(nr_threads, 1, LZO_THREADS);
+
+	page = vmalloc(sizeof(*page) * LZO_MAX_RD_PAGES);
+	if (!page) {
+		printk(KERN_ERR "PM: Failed to allocate LZO page\n");
+		ret = -ENOMEM;
+		goto out_clean;
+	}
+
+	data = vmalloc(sizeof(*data) * nr_threads);
+	if (!data) {
+		printk(KERN_ERR "PM: Failed to allocate LZO data\n");
+		ret = -ENOMEM;
+		goto out_clean;
+	}
+	for (thr = 0; thr < nr_threads; thr++)
+		memset(&data[thr], 0, offsetof(struct dec_data, go));
+
+	/*
+	 * Start the decompression threads.
+	 */
+	for (thr = 0; thr < nr_threads; thr++) {
+		init_waitqueue_head(&data[thr].go);
+		init_waitqueue_head(&data[thr].done);
+
+#ifdef COMPRESS_MODE_LZ4
+		data[thr].thr = kthread_run(lz4_decompress_threadfn,
+					    &data[thr],
+					    "image_decompress/%u", thr);
+#else
+		data[thr].thr = kthread_run(lzo_decompress_threadfn,
+									&data[thr],
+									"image_decompress/%u", thr);
+#endif
+		if (IS_ERR(data[thr].thr)) {
+			data[thr].thr = NULL;
+			printk(KERN_ERR
+				   "PM: Cannot start decompression threads\n");
+			ret = -ENOMEM;
+			goto out_clean;
+		}
+	}
+	
+	/*
+	 * Set the number of pages for read buffering.
+	 * This is complete guesswork, because we'll only know the real
+	 * picture once prepare_image() is called, which is much later on
+	 * during the image load phase. We'll assume the worst case and
+	 * say that none of the image pages are from high memory.
+	 */
+	if (low_free_pages() > snapshot_get_image_size())
+		read_pages = (low_free_pages() - snapshot_get_image_size()) / 2;
+	//printk("\n!!! read_pages:%lu:low_free_pages:%lu:image_size:%lu\n",
+	//			read_pages, low_free_pages(), snapshot_get_image_size());
+	read_pages = clamp_val(read_pages, LZO_MIN_RD_PAGES, LZO_MAX_RD_PAGES);
+	//printk("\n actual read_pages = %lu\n", read_pages);
+
+	for (i = 0; i < read_pages; i++) {
+		page[i] = (void *)__get_free_page(i < LZO_CMP_PAGES ?
+										  __GFP_WAIT | __GFP_HIGH :
+										  __GFP_WAIT | __GFP_NOWARN |
+										  __GFP_NORETRY);
+
+		if (!page[i]) {/*get free page failed.*/
+			if (i < LZO_CMP_PAGES) {
+				ring_size = i;
+				printk(KERN_ERR
+					   "PM: Failed to allocate LZO pages\n");
+				ret = -ENOMEM;
+				goto out_clean;
+			} else {
+				break;
+			}
+		}
+	}
+	
+	reminder = i % LZO_BUF_BLOCK_NUM;
+	if(reminder)
+		i = i - reminder;
+	ring_size = i; /*want = ring_size <= read_pages*/
+	want = ring_size / LZO_BUF_BLOCK_NUM;
+	
+	printk(KERN_CRIT"allocate %u pages as Load Ring buffer\n", ring_size);
+	printk(KERN_INFO
+		"PM: Using %u thread(s) for decompression.\n"
+		"PM: Loading and decompressing image data (%u pages) ...	 ",
+		nr_threads, nr_to_read);
+	m = nr_to_read / 100;
+	if (!m)
+		m = 1;
+	nr_pages = 0;
+	bio = NULL;
+
+	do_gettimeofday(&start);
+	
+	ret = snapshot_write_next(snapshot);
+	if (ret <= 0)
+		goto out_finish;
+
+	buffer_stat = BOTH_EMPTY;
+/*request to fill buf 0, wait on io for it to finish.*/
+
+	for (i = 0; !eof && i < want; i++) {
+		ret = swap_read_page(handle, page[ring], &bio);
+		if (ret) {
+			/*
+			 * On real read error, finish. On end of data,
+			 * set EOF flag and just exit the read loop.
+			 */
+			if (handle->cur &&
+				handle->cur->entries[handle->k]) {/* has unloaded pages.*/
+				goto out_finish;
+			} else {/*EOF*/
+				eof = 1; /*still need to wait on io later.*/
+				break;
+			}
+		}
+		/*ret = 0*/
+		if (++ring >= ring_size) /*ring buffer reach end*/
+			ring = 0;
+	}
+	asked += i;
+
+	ret = hib_wait_on_bio_chain(&bio);/* make sure read io finished */
+		
+	if (ret)
+		goto out_finish;
+	have += asked;
+	asked = 0;
+	if (eof)
+		eof = 2;	/* already return from wait on io. */
+	
+	buffer_stat = ONE_FULL;
+	
+	/* send resquest for next buffer immediately */
+	for (i = 0; !eof && i < want; i++) { /*load num = want lzo pages from disk*/
+		ret = swap_read_page(handle, page[ring], &bio);
+		if (ret) {
+			/*
+			 * On real read error, finish. On end of data,
+			 * set EOF flag and just exit the read loop.
+			 */
+			if (handle->cur &&
+				handle->cur->entries[handle->k]) {/* has unloaded pages.*/
+				goto out_finish;
+			} else {/*EOF*/
+				eof = 1; 
+				break;
+			}
+		}
+		/*ret = 0*/
+		if (++ring >= ring_size) /*ring buffer full*/
+			ring = 0;
+	}
+	asked  += i;
+
+for(;;){
+		
+loop_start:
+		/*run lzo thread on buf 0 */
+		for (thr = 0; have && thr < nr_threads; thr++) {
+			data[thr].cmp_len = *(size_t *) page[pg];	/* Read LZO_HEADER */
+//			printk("data[%d].cpm_len = %u\n", thr, data[thr].cmp_len);
+
+			if (unlikely(!data[thr].cmp_len ||
+				     data[thr].cmp_len >
+			#ifdef COMPRESS_MODE_LZ4
+					lz4_worst_compress(LZO_UNC_SIZE)
+			#else
+					lzo1x_worst_compress(LZO_UNC_SIZE)
+			#endif
+			)) {
+				printk(KERN_ERR
+				       "PM: AAA: Invalid LZO compressed length\n");
+//				printk("worst_compress %lu", lz4_worst_compress(LZO_UNC_SIZE));
+				printk("buffer_stat = %d\n", buffer_stat);
+				ret = -1;
+				goto out_finish;
+			}
+			need = DIV_ROUND_UP(data[thr].cmp_len + LZO_HEADER,
+					    PAGE_SIZE);
+			if (need > have) {
+				if (eof > 1) {
+					ret = -1;
+					goto out_finish;
+				}
+				break;
+			}
+
+		for (off = 0;	/* copy data from page[pg] to lzo thread buffer*/
+			 off < LZO_HEADER + data[thr].cmp_len;
+			 off += PAGE_SIZE) {
+			memcpy(data[thr].cmp + off,
+				   page[pg], PAGE_SIZE);
+			have--; /*one page is comsumed by lzo decompress thread.*/
+			if (++pg >= ring_size)	/* ring buffer is empty*/
+				pg = 0;
+		}
+		
+		atomic_set(&data[thr].ready, 1);	/* set ready bit*/
+		wake_up(&data[thr].go);				/* wake up corresponding lzo thread*/
+	}			
+
+	/*get the next cmp data length*/
+	next_cmp_len = DIV_ROUND_UP(*(size_t *) page[pg] + LZO_HEADER,
+				    PAGE_SIZE);
+
+	if(buffer_stat == ANOTHER_FULL){
+		
+		if( unlikely(((ring_size/2-pg) < next_cmp_len) 
+			|| ((ring_size-pg) < next_cmp_len) )
+		){
+			/* printk(KERN_CRIT"!!! pg = %u, ring_size/2 = %u,"\
+					" skip sending request.\n", pg, ring_size/2); */
+			goto skip_req;
+		}
+
+	/* all data in previous buffer was loaded into lzo thread for decompression, 
+	   before it finish we have some time to send IO request to load the previous buffer.
+	*/
+		for (i = 0; !eof && i < want; i++) {
+			ret = swap_read_page(handle, page[ring], &bio);
+			if (ret) {
+				/*
+				 * On real read error, finish. On end of data,
+				 * set EOF flag and just exit the read loop.
+				 */
+				if (handle->cur &&
+					handle->cur->entries[handle->k]) {/* has unloaded pages.*/
+					goto out_finish;
+				} else {/*EOF*/
+					eof = 1; /*still need to wait on io later.*/
+					break;
+				}
+			}
+			/*ret = 0*/
+			if (++ring >= ring_size) /*ring buffer reach end*/
+				ring = 0;
+		}
+		asked += i;		
+	}
+
+skip_req:
+	for (run_threads = thr, thr = 0; thr < run_threads; thr++) {/*wait for every running thread finish*/
+
+		
+		wait_event(data[thr].done,
+			atomic_read(&data[thr].stop));
+		atomic_set(&data[thr].stop, 0);
+
+		ret = data[thr].ret;
+	
+		if (ret < 0) {
+			printk(KERN_ERR
+				   "PM: LZO decompression failed\n");
+			goto out_finish;
+		}
+	
+		if (unlikely(!data[thr].unc_len ||
+					 data[thr].unc_len > LZO_UNC_SIZE ||
+					 data[thr].unc_len & (PAGE_SIZE - 1))) {
+			printk(KERN_ERR
+				   "PM: BBB: Invalid LZO uncompressed length\n");
+			printk("buffer_stat = %d\n", buffer_stat);
+			ret = -1;
+			goto out_finish;
+		}
+		for (off = 0;	/* copy data from lzo thread output to snapshot memory*/
+			 off < data[thr].unc_len; off += PAGE_SIZE) {
+			memcpy(data_of(*snapshot),
+				   data[thr].unc + off, PAGE_SIZE);
+	
+			if (!(nr_pages % m))
+				printk("\b\b\b\b%3d%%", nr_pages / m);
+			nr_pages++;
+	
+			ret = snapshot_write_next(snapshot);
+			if (ret <= 0) {
+				goto out_finish;
+			}
+		}	 
+	}
+	if(buffer_stat == ONE_FULL){
+		if (unlikely(have < next_cmp_len && asked)){
+			buffer_stat = ONE_ALMOST_EMPTY;
+			goto one_almost_empty;
+		}else{
+			goto loop_start;
+		}
+	}else{	// buffer_stat should be ANOTHER_FULL
+		if(asked || eof){
+		buffer_stat = ONE_FULL;
+		}else{
+			/*printk(KERN_CRIT "buffer_state:%u , eof=%d:  havn't request IO yet.\n", 
+				buffer_stat, eof); */
+		}
+		goto loop_start;
+	}
+one_almost_empty:
+	/* wait on io for buf 1 to finish. */
+	ret = hib_wait_on_bio_chain(&bio);
+
+	
+	if (ret)
+		goto out_finish;
+	have += asked;	/* all 'asked' data become 'have' data , and reset 'asked' to 0 */
+	asked = 0;
+	if (eof)
+		eof = 2;
+	
+	buffer_stat = ANOTHER_FULL;	
+
+}
+
+out_finish:
+	do_gettimeofday(&stop);
+
+	if (!ret) {
+		printk("\b\b\b\bdone\n");
+		snapshot_write_finalize(snapshot);
+		if (!snapshot_image_loaded(snapshot))
+			ret = -ENODATA;
+	} else
+		printk("\n");
+	swsusp_show_speed(&start, &stop, nr_to_read, "Read");
+
+out_clean:
+	for (i = 0; i < ring_size; i++)
+		free_page((unsigned long)page[i]);
+	if (data) {
+		for (thr = 0; thr < nr_threads; thr++)
+			if (data[thr].thr)
+				kthread_stop(data[thr].thr);
+		vfree(data);
+	}
+	if (page) vfree(page);
+
+	return ret;	
+
 }
 
 /**
@@ -1404,8 +1984,9 @@ int swsusp_read(unsigned int *flags_p)
 		error = swap_read_page(&handle, header, NULL);
 	if (!error) {
 		error = (*flags_p & SF_NOCOMPRESS_MODE) ?
-			load_image(&handle, &snapshot, header->pages - 1) :
-			load_image_lzo(&handle, &snapshot, header->pages - 1);
+		    load_image(&handle, &snapshot, header->pages - 1) :
+		    load_image_compress_dualbuf(&handle, &snapshot,
+						header->pages - 1);
 	}
 	swap_reader_finish(&handle);
 end:

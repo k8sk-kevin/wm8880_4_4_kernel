@@ -283,6 +283,17 @@ static int alarm_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+void devalarm_triggered2(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&alarm_slock, flags);
+	wake_lock_timeout(&alarm_wake_lock, 5 * HZ);
+	alarm_pending |= 0x10000;
+	wake_up(&alarm_wait_queue);
+	spin_unlock_irqrestore(&alarm_slock, flags);
+}
+
 static void devalarm_triggered(struct devalarm *alarm)
 {
 	unsigned long flags;

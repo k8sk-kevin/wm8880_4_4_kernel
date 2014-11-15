@@ -64,6 +64,7 @@ struct nand_bbt_descr {
 	int maxblocks;
 	int reserved_block_code;
 	uint8_t *pattern;
+	int	page_offset[2]; /* used to record bad block signature in which pages.*/
 };
 
 /* Options for the bad block table descriptors */

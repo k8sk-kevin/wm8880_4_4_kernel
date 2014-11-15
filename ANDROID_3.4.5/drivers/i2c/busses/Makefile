@@ -88,4 +88,6 @@ obj-$(CONFIG_I2C_STUB)		+= i2c-stub.o
 obj-$(CONFIG_SCx200_ACB)	+= scx200_acb.o
 obj-$(CONFIG_SCx200_I2C)	+= scx200_i2c.o
 
+obj-$(CONFIG_I2C_WMT)	        += wmt-i2c-bus.o wmt-i2c-bus-1.o wmt-i2c-bus-2.o wmt-i2c-bus-3.o wmt-i2c-bus-4.o
+obj-$(CONFIG_I2C_SLAVE_WMT)     += wmt-i2c-slave-bus.o wmt-i2c-slave-bus-1.o
 ccflags-$(CONFIG_I2C_DEBUG_BUS) := -DDEBUG

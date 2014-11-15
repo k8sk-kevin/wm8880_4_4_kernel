@@ -3,6 +3,17 @@
 #include <linux/utsname.h>
 #include <linux/freezer.h>
 
+/*FIXME: currently PAGE CRC can not support highmem !!!*/
+#define _PRINT_PAGE_CRC_ 1//also need to set in arch/arm/kernel/hibernate.c
+#undef _PRINT_PAGE_CRC_
+
+#ifdef _PRINT_PAGE_CRC_
+#include <linux/crc32.h>//for page crc
+#endif
+
+#define STD_USER_ABORT 0xA5
+#define STD_RETRY_TIMES (2)
+
 struct swsusp_info {
 	struct new_utsname	uts;
 	u32			version_code;
@@ -11,6 +22,7 @@ struct swsusp_info {
 	unsigned long		image_pages;
 	unsigned long		pages;
 	unsigned long		size;
+	char			archdata[1024];
 } __attribute__((aligned(PAGE_SIZE)));
 
 #ifdef CONFIG_HIBERNATION
@@ -37,6 +49,8 @@ static inline char *check_image_kernel(struct swsusp_info *info)
 }
 #endif /* CONFIG_ARCH_HIBERNATION_HEADER */
 
+extern void __weak swsusp_arch_add_info(char *archdata, size_t size);
+extern int swsusp_swap_check(void);
 /*
  * Keep some memory free so that I/O operations can succeed without paging
  * [Might this be more than 4 MB?]
@@ -170,6 +184,9 @@ struct timeval;
 /* kernel/power/swsusp.c */
 extern void swsusp_show_speed(struct timeval *, struct timeval *,
 				unsigned int, char *);
+
+/*kernel/power/snapshot.c*/
+extern void swsusp_free_page(void *buffer);
 
 #ifdef CONFIG_SUSPEND
 /* kernel/power/suspend.c */

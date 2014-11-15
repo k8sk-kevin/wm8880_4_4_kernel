@@ -476,6 +476,27 @@ struct usb_tt_clear {
 extern int usb_hub_clear_tt_buffer(struct urb *urb);
 extern void usb_ep0_reinit(struct usb_device *);
 
+/*{CharlesTu, 2010.08.26, for test mode */
+#define USB_PORT_FEAT_INDICATOR         22
+
+/* 
+ * Hub Port Test Mode Selector Codes
+ * See USB 2.0 spec Table 11-24
+ */
+#define USB_PORT_TEST_J				0x01
+#define USB_PORT_TEST_K				0x02
+#define USB_PORT_TEST_SE0_NAK			0x03
+#define USB_PORT_TEST_PACKET			0x04
+#define USB_PORT_TEST_FORCE_ENABLE		0x05
+
+/*
+ * This is used for the Hi-Speed Host Electrical Tests
+ * on the root hub. See USB 2.0 spec 7.1.20 and the
+ * Embedded High-speed Host Electrical Test Procedure.
+ */
+#define USB_PORT_TEST_SINGLE_STEP_SET_FEATURE	0x00
+/*CharelsTu} */
+
 /* (shifted) direction/type/recipient from the USB 2.0 spec, table 9.2 */
 #define DeviceRequest \
 	((USB_DIR_IN|USB_TYPE_STANDARD|USB_RECIP_DEVICE)<<8)

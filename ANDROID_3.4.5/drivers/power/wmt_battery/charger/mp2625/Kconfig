@@ -1,0 +1,5 @@
+config MP2625_CHARGER
+		tristate "MP2625 Charger driver"
+		depends on I2C
+		help
+			Say Y here to enable support for charger with mp2625 chip.	  

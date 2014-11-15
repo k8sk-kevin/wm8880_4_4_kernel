@@ -34,10 +34,12 @@ int mmc_app_cmd(struct mmc_host *host, struct mmc_card *card)
 
 	if (card) {
 		cmd.arg = card->rca << 16;
-		cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+		//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
 	} else {
 		cmd.arg = 0;
-		cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_BCR;
+		//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_BCR;
+		cmd.flags = MMC_RSP_R1 | MMC_CMD_BCR;
 	}
 
 	err = mmc_wait_for_cmd(host, &cmd, 0);
@@ -159,7 +161,8 @@ int mmc_send_app_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 		cmd.arg = ocr & (1 << 30); /* SPI only defines one bit */
 	else
 		cmd.arg = ocr;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R3 | MMC_CMD_BCR;
+	//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R3 | MMC_CMD_BCR;
+	cmd.flags = MMC_RSP_R3 | MMC_CMD_BCR;
 
 	for (i = 100; i; i--) {
 		err = mmc_wait_for_app_cmd(host, NULL, &cmd, MMC_CMD_RETRIES);
@@ -204,7 +207,8 @@ int mmc_send_if_cond(struct mmc_host *host, u32 ocr)
 	 */
 	cmd.opcode = SD_SEND_IF_COND;
 	cmd.arg = ((ocr & 0xFF8000) != 0) << 8 | test_pattern;
-	cmd.flags = MMC_RSP_SPI_R7 | MMC_RSP_R7 | MMC_CMD_BCR;
+	//cmd.flags = MMC_RSP_SPI_R7 | MMC_RSP_R7 | MMC_CMD_BCR;
+	cmd.flags =  MMC_RSP_R7 | MMC_CMD_BCR;
 
 	err = mmc_wait_for_cmd(host, &cmd, 0);
 	if (err)
@@ -273,7 +277,8 @@ int mmc_app_send_scr(struct mmc_card *card, u32 *scr)
 
 	cmd.opcode = SD_APP_SEND_SCR;
 	cmd.arg = 0;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
 
 	data.blksz = 8;
 	data.blocks = 1;
@@ -324,7 +329,8 @@ int mmc_sd_switch(struct mmc_card *card, int mode, int group,
 	cmd.arg = mode << 31 | 0x00FFFFFF;
 	cmd.arg &= ~(0xF << (group * 4));
 	cmd.arg |= value << (group * 4);
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	//cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
 
 	data.blksz = 64;
 	data.blocks = 1;
@@ -369,7 +375,8 @@ int mmc_app_sd_status(struct mmc_card *card, void *ssr)
 
 	cmd.opcode = SD_APP_SD_STATUS;
 	cmd.arg = 0;
-	cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	//cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
 
 	data.blksz = 64;
 	data.blocks = 1;

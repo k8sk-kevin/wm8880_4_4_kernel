@@ -1,0 +1,76 @@
+config BCMDHD
+	tristate "Broadcom ap6474 for android4.4 wireless cards support"
+	depends on MMC
+	---help---
+	  This module adds support for wireless adapters based on
+	  Broadcom 4329/30 chipset.
+
+config BCMDHD_FW_PATH
+	depends on BCMDHD
+	string "Firmware path"
+	default "/system/etc/firmware/fw_bcmdhd.bin"
+	---help---
+	  Path to the firmware file.
+
+config BCMDHD_NVRAM_PATH
+	depends on BCMDHD
+	string "NVRAM path"
+	default "/system/etc/firmware/nvram_ap6476.txt"
+	---help---
+	  Path to the calibration file.
+
+config BCMDHD_CONFIG_PATH
+	depends on BCMDHD
+	string "Config path"
+	default "/system/etc/firmware/config.txt"
+	---help---
+	  Path to the driver configuration file.
+
+config BCMDHD_WEXT
+	bool "Enable WEXT support"
+	depends on BCMDHD && CFG80211 = n
+	select WIRELESS_EXT
+	select WEXT_PRIV
+	help
+	  Enables WEXT support
+
+choice
+	depends on BCMDHD
+	prompt "Interrupt type"
+	---help---
+	  Interrupt type
+config BCMDHD_OOB
+	depends on BCMDHD
+	bool "Out-of-Band Interrupt"
+	default y
+	---help---
+	  Interrupt from WL_HOST_WAKE.
+config BCMDHD_SDIO_IRQ
+	depends on  BCMDHD
+	bool "In-Band Interrupt"
+	---help---
+	  Interrupt from SDIO DAT[1]
+endchoice
+
+choice
+	depends on  BCMDHD
+	prompt "Power saving mode in suspend"
+	---help---
+	  Power saving mode in suspend
+config BCMDHD_PS0
+	depends on BCMDHD_OOB
+	bool "Keep power and WoWLAN enabled"
+	default y
+	---help---
+	  Wi-Fi can keep connect with AP in suspend and wake up host if packets received.
+	  WL_HOST_WAKE must be connected to the GPIO which can wake up host in suspend.
+config BCMDHD_DISABLE_WOWLAN
+	bool "Keep power but WoWLAN disabled"
+	---help---
+	  Wi-Fi can keep connect with AP in suspend
+config BCMDHD_POWER_OFF_IN_SUSPEND
+	bool "Power off"
+	---help---
+	  Wi-Fi would be powered down in suspend and powered on in resumed
+endchoice
+

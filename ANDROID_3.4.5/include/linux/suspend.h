@@ -335,7 +335,7 @@ static inline bool system_entering_hibernation(void) { return false; }
 #define PM_POST_SUSPEND		0x0004 /* Suspend finished */
 #define PM_RESTORE_PREPARE	0x0005 /* Going to restore a saved image */
 #define PM_POST_RESTORE		0x0006 /* Restore failed */
-
+#define PM_HIBERNATION_FINISH       0x0007
 extern struct mutex pm_mutex;
 
 #ifdef CONFIG_PM_SLEEP

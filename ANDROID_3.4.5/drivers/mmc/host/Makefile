@@ -57,3 +57,7 @@ obj-$(CONFIG_MMC_SDHCI_OF_HLWD)		+= sdhci-of-hlwd.o
 ifeq ($(CONFIG_CB710_DEBUG),y)
 	CFLAGS-cb710-mmc	+= -DDEBUG
 endif
+
+obj-$(CONFIG_MMC_ATSMB)		+= mmc_atsmb.o
+obj-$(CONFIG_MMC_ATSMB1)	+= mmc_atsmb1.o
+obj-$(CONFIG_MMC_ATSMB2)	+= mmc_atsmb2.o

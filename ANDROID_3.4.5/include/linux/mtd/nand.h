@@ -56,8 +56,8 @@ extern int nand_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
  * is supported now. If you add a chip with bigger oobsize/page
  * adjust this accordingly.
  */
-#define NAND_MAX_OOBSIZE	576
-#define NAND_MAX_PAGESIZE	8192
+#define NAND_MAX_OOBSIZE	2560
+#define NAND_MAX_PAGESIZE	32768
 
 /*
  * Constants for hardware specific CLE/ALE/NCE function
@@ -91,8 +91,11 @@ extern int nand_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
 #define NAND_CMD_RNDIN		0x85
 #define NAND_CMD_READID		0x90
 #define NAND_CMD_ERASE2		0xd0
+#define NAND_CMD_ERASE3		0xd1
 #define NAND_CMD_PARAM		0xec
 #define NAND_CMD_RESET		0xff
+#define NAND_CMD_RESET_NO_STATUS_READ 0xFF1
+#define NAND_CMD_HYNIX_RETRY_END 0x38
 
 #define NAND_CMD_LOCK		0x2a
 #define NAND_CMD_UNLOCK1	0x23
@@ -121,6 +124,43 @@ extern int nand_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
 #define NAND_CMD_STATUS_ERROR3	0x76
 #define NAND_CMD_STATUS_RESET	0x7f
 #define NAND_CMD_STATUS_CLEAR	0xff
+
+#define MULTI_READ_1CYCLE       0x200
+#define MULTI_READ_2CYCLE       0x201
+#define MULTI_COPY_1CYCLE				0x202
+#define MULTI_COPY_2CYCLE				0x203
+#define MULTI_COPY_3CYCLE				0x204
+#define COPY_BACK_1CYCLE				0x205
+#define COPY_BACK_2CYCLE				0x206
+
+
+/*
+ * Support Nand special commands
+ */
+#define CACHE_READ							(1<<0)
+#define CACHE_PROG							(1<<1)
+#define COPY_BACK								(1<<2)
+#define INTEL_COPY_BACK					(1<<3)
+#define RANDOM_INPUT						(1<<4)
+#define RANDOM_OUTPUT						(1<<5)
+#define PLANE2_READ							(1<<6)
+#define PLANE2_PROG							(1<<7)
+#define PLANE2_CACHE_READ				(1<<8)
+#define PLANE2_CACHE_PROG				(1<<9)
+#define PLANE2_COPY_BACK				(1<<10)
+#define PLANE2_INTEL_COPY_BACK	(1<<11)
+#define PLANE2_RANDOM_OUTPUT		(1<<12)
+#define PLANE2_ERASE						(1<<13)
+
+#define PLANE4_READ							(1<<16)
+#define PLANE4_PROG							(1<<17)
+#define PLANE4_CACHE_READ				(1<<18)
+#define PLANE4_CACHE_PROG				(1<<19)
+#define PLANE4_COPY_BACK				(1<<20)
+#define PLANE4_INTEL_COPY_BACK	(1<<21)
+#define PLANE4_RANDOM_OUTPUT		(1<<22)
+#define PLANE4_ERASE						(1<<23)
+
 
 #define NAND_CMD_NONE		-1
 
@@ -380,6 +420,10 @@ struct nand_ecc_ctrl {
 			int sndcmd);
 	int (*write_oob)(struct mtd_info *mtd, struct nand_chip *chip,
 			int page);
+        int			(*read_bb_oob)(struct mtd_info *mtd,
+					    struct nand_chip *chip,
+					    int page,
+					    int sndcmd);
 };
 
 /**
@@ -492,7 +536,7 @@ struct nand_chip {
 	int (*verify_buf)(struct mtd_info *mtd, const uint8_t *buf, int len);
 	void (*select_chip)(struct mtd_info *mtd, int chip);
 	int (*block_bad)(struct mtd_info *mtd, loff_t ofs, int getchip);
-	int (*block_markbad)(struct mtd_info *mtd, loff_t ofs);
+	int (*block_markbad)(struct mtd_info *mtd, loff_t ofs, int type);
 	void (*cmd_ctrl)(struct mtd_info *mtd, int dat, unsigned int ctrl);
 	int (*init_size)(struct mtd_info *mtd, struct nand_chip *this,
 			u8 *id_data);
@@ -506,12 +550,14 @@ struct nand_chip {
 			int status, int page);
 	int (*write_page)(struct mtd_info *mtd, struct nand_chip *chip,
 			const uint8_t *buf, int page, int cached, int raw);
+	int (*get_para)(struct mtd_info *mtd, struct nand_chip *chip);
 
 	int chip_delay;
 	unsigned int options;
 	unsigned int bbt_options;
 
 	int page_shift;
+	int pagecnt_shift;
 	int phys_erase_shift;
 	int bbt_erase_shift;
 	int chip_shift;
@@ -542,6 +588,12 @@ struct nand_chip {
 	struct nand_bbt_descr *bbt_md;
 
 	struct nand_bbt_descr *badblock_pattern;
+	struct nand_bbt_descr *retry_pattern;
+	int page_offset[2];
+	struct nand_read_retry_param *cur_chip;
+	int realplanenum;
+	int bbt_plane[2];
+	int status_plane[2];
 
 	void *priv;
 };
@@ -557,7 +609,11 @@ struct nand_chip {
 #define NAND_MFR_STMICRO	0x20
 #define NAND_MFR_HYNIX		0xad
 #define NAND_MFR_MICRON		0x2c
+#define NAND_MFR_SANDISK	0x45
 #define NAND_MFR_AMD		0x01
+#define NAND_MFR_INTEL		0x89
+#define NAND_MFR_MXIC 		0xc2
+#define NAND_MFR_MIRA 		0x92
 #define NAND_MFR_MACRONIX	0xc2
 
 /**
@@ -581,6 +637,74 @@ struct nand_flash_dev {
 	unsigned long options;
 };
 
+#define BOOT_MAGIC_SIZE 0x8
+struct nand_rdtry_param_hdr {
+	unsigned char magic[BOOT_MAGIC_SIZE];
+	unsigned int nand_id;  //nand id
+	unsigned int nand_id_5th;  //nand 5th id
+	unsigned int eslc_reg_cnt; // Enhanced SLC register count.
+	unsigned int total_retry_cnt; // total retry count
+	unsigned int retry_reg_cnt; // retry register count
+	//unsigned char eslc[eslc_reg]; //eslc default data.
+	//unsigned char retry_data[total_retry_cnt * retry_reg_cnt];  /* param data */
+};
+//All
+struct nand_read_retry_param {
+	char magic[32];
+	unsigned int  nand_id;
+	unsigned int  nand_id_5th;
+	unsigned int  eslc_reg_num;
+	unsigned char eslc_offset[32];
+	unsigned char eslc_def_value[32];
+	unsigned char eslc_set_value[32];
+	unsigned int  retry_reg_num;
+	unsigned char  retry_offset[32];
+	unsigned char retry_def_value[32];
+	unsigned char retry_value[256];
+	unsigned int otp_len;
+	unsigned char otp_offset[32];
+	unsigned char otp_data[32];
+	unsigned int total_try_times;
+	int cur_try_times;
+	int (*set_parameter)(struct mtd_info *mtd, int mode, int def_mode);
+	int (*get_parameter)(struct mtd_info *mtd, int mode);
+	int (*get_otp_table)(struct mtd_info *mtd, struct nand_chip *chip);
+	int retry; //1: in retry mode 
+};
+/* #define RETRY_DEBUG */
+
+
+/* DannierChen-2009-10-07 add for new nand flash support list */
+#ifndef DWORD
+#define DWORD	unsigned int
+#endif
+#define MAX_PRODUCT_NAME_LENGTH 0x20
+struct WMT_nand_flash_dev {
+ DWORD dwFlashID;            //composed by 4 bytes of ID. For example:0xADF1801D
+ DWORD dwBlockCount;      //block count of one chip. For example: 1024
+ DWORD dwPageSize;       //page size. For example:2048(other value can be 512 or 4096)
+ DWORD dwSpareSize;       //spare area size. For example:16(almost all kinds of nand is 16)
+ DWORD dwBlockSize;       //block size = dwPageSize * PageCntPerBlock. For example:131072
+ DWORD dwAddressCycle;      //address cycle 4 or 5
+ DWORD dwBI0Position;      //BI0 page postion in block
+ DWORD dwBI1Position;      //BI1 page postion in block
+ DWORD dwBIOffset;       //BI offset in page
+ DWORD dwDataWidth;      //data with X8 or X16
+ DWORD dwPageProgramLimit;     //chip can program PAGE_PROGRAM_LIMIT times within the same page
+ DWORD dwSeqRowReadSupport;    //whether support sequential row read, 1 = support 0 = not support
+ DWORD dwSeqPageProgram;     //chip need sequential page program in a block. 1 = need
+ DWORD dwNandType;       //MLC or SLC
+ DWORD dwECCBitNum;      //ECC bit number needed
+ DWORD dwRWTimming;     //NFC Read Pulse width and Read hold time, write so does. default =0x12101210
+ DWORD dwTadl;      		//NFC write TADL timeing config
+ DWORD dwDDR;      		  //NFC support toshia ddr(toggle) mode = 1 not support = 0
+ DWORD dwRetry;    		  //NFC Read Retry support = 1 not support = 0
+ DWORD dwRdmz;					//NFC Randomizer support = 1 not support = 0
+ DWORD dwFlashID2;      //composed by additional 2 bytes of ID from original 4 bytes.
+ DWORD dwSpeedUpCmd;		/* supprot speed up nand command ex: 2-plane cache read and so on.. */
+ char ProductName[MAX_PRODUCT_NAME_LENGTH]; //product name. for example "HYNIX_NF_HY27UF081G2A"
+ unsigned long options;
+};
 /**
  * struct nand_manufacturers - NAND Flash Manufacturer ID Structure
  * @name:	Manufacturer name
@@ -591,18 +715,43 @@ struct nand_manufacturers {
 	char *name;
 };
 
+extern struct WMT_nand_flash_dev WMT_nand_flash_ids[];
 extern struct nand_flash_dev nand_flash_ids[];
 extern struct nand_manufacturers nand_manuf_ids[];
 
 extern int nand_scan_bbt(struct mtd_info *mtd, struct nand_bbt_descr *bd);
 extern int nand_update_bbt(struct mtd_info *mtd, loff_t offs);
 extern int nand_default_bbt(struct mtd_info *mtd);
-extern int nand_isbad_bbt(struct mtd_info *mtd, loff_t offs, int allowbbt);
+extern int nand_isbad_bbt(struct mtd_info *mtd, loff_t offs, int allowbbt, int allow_readfail);
+extern int nand_isbad_bbt_multi(struct mtd_info *mtd, loff_t offs, int allowbbt, int allow_readfail);
 extern int nand_erase_nand(struct mtd_info *mtd, struct erase_info *instr,
 			   int allowbbt);
 extern int nand_do_read(struct mtd_info *mtd, loff_t from, size_t len,
 			size_t *retlen, uint8_t *buf);
+extern struct nand_read_retry_param chip_table[];
+extern int hynix_get_parameter(struct mtd_info *mtd, int mode);
+extern int hynix_set_parameter(struct mtd_info *mtd, int mode, int def_mode);
+extern int hynix_get_otp(struct mtd_info *mtd, struct nand_chip *chip);
+extern int toshiba_get_parameter(struct mtd_info *mtd, int mode);
+extern int toshiba_set_parameter(struct mtd_info *mtd, int mode, int def_mode);
+extern int samsung_get_parameter(struct mtd_info *mtd, int mode);
+extern int samsung_set_parameter(struct mtd_info *mtd, int mode, int def_mode);
+extern int sandisk_get_parameter(struct mtd_info *mtd, int mode);
+extern int sandisk_set_parameter(struct mtd_info *mtd, int mode, int def_mode);
+extern int micron_get_parameter(struct mtd_info *mtd, int mode);
+extern int micron_set_parameter(struct mtd_info *mtd, int mode, int def_mode);
 
+
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
+#define READ_RETRY_CHIP_NUM ARRAY_SIZE(chip_table)
+#define ESLC_MODE 0
+#define READ_RETRY_MODE 1
+#define TEST_MODE 2
+#define DEFAULT_VALUE 0
+#define ECC_ERROR_VALUE 1
 /**
  * struct platform_nand_chip - chip level device structure
  * @nr_chips:		max. number of chips to scan for

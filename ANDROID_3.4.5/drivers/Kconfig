@@ -131,6 +131,7 @@ source "drivers/clk/Kconfig"
 source "drivers/hwspinlock/Kconfig"
 
 source "drivers/clocksource/Kconfig"
+source "drivers/mtk_wcn_combo/Kconfig"
 
 source "drivers/iommu/Kconfig"
 
@@ -141,5 +142,9 @@ source "drivers/rpmsg/Kconfig"
 source "drivers/virt/Kconfig"
 
 source "drivers/devfreq/Kconfig"
+
+source "drivers/mt5931/Kconfig"
+
+source "drivers/mtk_wcn_bt/Kconfig"
 
 endmenu

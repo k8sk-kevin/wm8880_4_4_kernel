@@ -731,6 +731,20 @@ cfg80211_bss_update(struct cfg80211_registered_device *dev,
 	return found;
 }
 
+
+static u64 rtw_get_systime_us(void)
+{
+#if 1 //LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
+	struct timespec ts;
+	get_monotonic_boottime(&ts);
+	return ((u64)ts.tv_sec*1000000) + ts.tv_nsec / 1000;
+#else
+	struct timeval tv;
+	do_gettimeofday(&tv);
+	return ((u64)tv.tv_sec*1000000) + tv.tv_usec;
+#endif
+}
+
 struct cfg80211_bss*
 cfg80211_inform_bss(struct wiphy *wiphy,
 		    struct ieee80211_channel *channel,
@@ -757,7 +771,12 @@ cfg80211_inform_bss(struct wiphy *wiphy,
 	memcpy(res->pub.bssid, bssid, ETH_ALEN);
 	res->pub.channel = channel;
 	res->pub.signal = signal;
+#if 0	
 	res->pub.tsf = tsf;
+#else
+	res->pub.tsf = rtw_get_systime_us();
+
+#endif	
 	res->pub.beacon_interval = beacon_interval;
 	res->pub.capability = capability;
 	/*
@@ -824,7 +843,12 @@ cfg80211_inform_bss_frame(struct wiphy *wiphy,
 	memcpy(res->pub.bssid, mgmt->bssid, ETH_ALEN);
 	res->pub.channel = channel;
 	res->pub.signal = signal;
+#if 0	
 	res->pub.tsf = le64_to_cpu(mgmt->u.probe_resp.timestamp);
+#else
+	res->pub.tsf = rtw_get_systime_us();
+	
+#endif
 	res->pub.beacon_interval = le16_to_cpu(mgmt->u.probe_resp.beacon_int);
 	res->pub.capability = le16_to_cpu(mgmt->u.probe_resp.capab_info);
 	/*

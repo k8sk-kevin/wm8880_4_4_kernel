@@ -1000,12 +1000,59 @@ static void usb_debugfs_cleanup(void)
 	debugfs_remove(usb_debug_root);
 }
 
+unsigned char usb_sus = 0;
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);	
+
 /*
  * Init
  */
+ 
+extern char enable_uhci0_wake;
+extern char enable_uhci1_wake;
+extern char enable_ehci_wake ;
+ 
+char enable_ehci_disc_wakeup = 0; 
+ 
 static int __init usb_init(void)
 {
+  
 	int retval;
+
+	char usb_env_pmc_name[] = "wmt.pmc.param";
+	char usb_env_pmc_val[120] = "0";
+	int varpmclen = 120;	
+	unsigned int usb_pmc_param[7];
+
+	if(wmt_getsyspara(usb_env_pmc_name, usb_env_pmc_val, &varpmclen) == 0) {						
+			sscanf(usb_env_pmc_val,"%X:%X:%X:%X:%X:%X:%X", &usb_pmc_param[0],&usb_pmc_param[1], 
+			&usb_pmc_param[2],&usb_pmc_param[3],&usb_pmc_param[4],&usb_pmc_param[5],&usb_pmc_param[6]);
+			printk("*** uhci_hcd_init usb_param[0]  =%x ,usb_param[1]=%x ,usb_param[2]=%x ,usb_param[3]=%x ,usb_param[4]=%x, usb_param[5]=%x, usb_param[6]=%x\n"
+			,usb_pmc_param[0],usb_pmc_param[1],usb_pmc_param[2],usb_pmc_param[3],usb_pmc_param[4]
+			,usb_pmc_param[5],usb_pmc_param[6]);
+			if (usb_pmc_param[0]) {	
+				if(usb_pmc_param[1] & 0x00100000) {
+					enable_ehci_wake = 1;	
+					//printk("usb_storage_id  =%x , it should be small than or equal  4 .\n",usb_storage_id);
+				} else {
+						enable_ehci_wake = 0;// default port B
+				}
+				if (usb_pmc_param[5] & 0x1)
+					enable_uhci0_wake = 1;
+				else
+					enable_uhci0_wake = 0;
+				if (usb_pmc_param[5] & 0x2)
+					enable_uhci1_wake = 1;
+				else
+					enable_uhci1_wake = 0;
+				if (usb_pmc_param[6] & 0x1)
+					enable_ehci_disc_wakeup = 1;
+			} else {			
+				enable_ehci_wake = 0;  
+				enable_uhci1_wake = 0;
+				enable_uhci0_wake = 0;
+ 			}		
+	}		
+	
 	if (nousb) {
 		pr_info("%s: USB support disabled\n", usbcore_name);
 		return 0;

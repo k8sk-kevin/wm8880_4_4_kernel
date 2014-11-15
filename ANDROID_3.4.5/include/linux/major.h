@@ -171,7 +171,14 @@
 
 #define VIOTAPE_MAJOR		230
 
+#define VD_MAJOR                236   /* For all Video Decoders & Encoders */
+#define CIPHER_MAJOR            238   /* For security engine */
+
+#define VID_MAJOR               241   /* For CMOS driver */
+#define MB_MAJOR                242   /* For WMT Memory Block driver */
+
 #define BLOCK_EXT_MAJOR		259
 #define SCSI_OSD_MAJOR		260	/* open-osd's OSD scsi device */
+#define CEC_MAJOR		261	/* for WMT HDMI CEC driver*/
 
 #endif

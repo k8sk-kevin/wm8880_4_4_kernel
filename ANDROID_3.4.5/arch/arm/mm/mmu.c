@@ -322,7 +322,11 @@ static void __init build_mem_type_table(void)
 		ecc_mask = 0;
 	}
 	if (is_smp())
+#if defined(CONFIG_ARCH_WMT_SMP_CACHEPOLICY_WRITEBACK)
+		cachepolicy = CPOLICY_WRITEBACK;
+#else
 		cachepolicy = CPOLICY_WRITEALLOC;
+#endif
 
 	/*
 	 * Strip out features not present on earlier architectures.

@@ -35,10 +35,15 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/map.h>
+#include <linux/vmalloc.h>
 
 #include <asm/uaccess.h>
 
 static DEFINE_MUTEX(mtd_mutex);
+
+extern int wmt_getsyspara(char *varname, char *varval, int *varlen);
+extern int wmt_setsyspara(char *varname, char *varval);
+extern int wmt_write_signed_image(struct write_signed_image *wsi);
 
 /*
  * Data structure to hold the pointer to the mtd device as well
@@ -885,6 +890,93 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
 		if (copy_from_user(&offs, argp, sizeof(loff_t)))
 			return -EFAULT;
 		return mtd_block_markbad(mtd, offs);
+		break;
+	}
+
+	case MEMGETENV:
+	{
+		struct env_info_user env_data;
+
+		if (copy_from_user(&env_data, argp, sizeof(struct env_info_user)))
+			return -EFAULT;
+
+		env_data.varname[sizeof(env_data.varname) -1] = '\0';
+		env_data.varlen = sizeof(env_data.varval);
+		ret = wmt_getsyspara(env_data.varname, env_data.varval, &env_data.varlen);
+		if (ret)
+			return -EIO;
+
+		if (copy_to_user(argp, &env_data,	sizeof(struct env_info_user)))
+			return -EFAULT;
+		break;
+	}
+
+	case MEMSETENV:
+	{
+		struct env_info_user env_data;
+
+		if (copy_from_user(&env_data, argp, sizeof(struct env_info_user)))
+			return -EFAULT;
+
+		env_data.varname[sizeof(env_data.varname) -1] = '\0';
+		env_data.varval[sizeof(env_data.varval) -1] = '\0';
+		env_data.varlen = sizeof(env_data.varval);
+
+		if (env_data.varpoint == NULL)
+			ret = wmt_setsyspara(env_data.varname, NULL);
+		else 
+			ret = wmt_setsyspara(env_data.varname, env_data.varval);
+
+		if (ret)
+			return -EIO;
+
+		break;
+	}
+
+    case MEM_WRITE_SIGNED_IMAGE:
+	{
+		struct write_signed_image w;
+        char * kimage, *ksig;
+        printk("MEM_WRITE_SIGNED_IMAGE : %x\n", MEM_WRITE_SIGNED_IMAGE);
+        
+        //if(!access_ok(VERIFY_READ,argp,size)
+		if (copy_from_user(&w, argp, sizeof(struct write_signed_image)))
+			return -EFAULT;
+
+        if( w.img_len > SZ_512K || w.sig_len > SZ_4K)
+            return -E2BIG;
+            
+        printk("begin wmt_write_signed_image: type %d/ imglen:%d signlen:%d\n", 
+               w.type, w.img_len - 1, w.sig_len);            
+
+        kimage = vmalloc(w.img_len);
+        if(!kimage)
+            return -ENOMEM;
+
+        ksig   = vmalloc(w.sig_len);
+        if(!ksig) {
+            vfree(kimage);
+            return -ENOMEM;
+        }
+
+        if (copy_from_user(kimage, w.img_data, w.img_len) ||
+            copy_from_user(ksig, w.sig_data, w.sig_len)) {
+            vfree(kimage);
+            vfree(ksig);
+            return -EFAULT;
+        }
+
+        w.img_data = kimage;
+        w.sig_data = ksig;
+
+        ret = wmt_write_signed_image(&w);
+
+        printk(" wmt_write_signed_image: type %d/ %x-%x %x-%x return %d\n", 
+               w.type, kimage[0], kimage[w.img_len - 1], 
+               ksig[0],  ksig[w.sig_len - 1], ret);
+
+        vfree(kimage);
+        vfree(ksig);
 		break;
 	}
 

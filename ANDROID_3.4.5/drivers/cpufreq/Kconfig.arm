@@ -76,3 +76,13 @@ config ARM_EXYNOS5250_CPUFREQ
 	help
 	  This adds the CPUFreq driver for Samsung EXYNOS5250
 	  SoC.
+
+config ARM_WMT_CPUFREQ
+	bool "WonderMedia WM8xxx SoCs"
+	depends on ARCH_WMT
+	default y
+	help
+	  This adds the CPUFreq driver common part for WonderMedia 
+	  WM8xxx SoCs.
+
+	  If in doubt, say N.

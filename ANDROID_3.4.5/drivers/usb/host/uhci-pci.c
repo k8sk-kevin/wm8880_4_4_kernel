@@ -18,6 +18,7 @@
  */
 
 #include "pci-quirks.h"
+#include <mach/hardware.h>
 
 /*
  * Make sure the controller is completely inactive, unable to
@@ -162,11 +163,16 @@ static void uhci_shutdown(struct pci_dev *pdev)
 
 #ifdef CONFIG_PM
 
+extern char enable_ehci_wake;
+extern char enable_uhci0_wake;
+extern char enable_uhci1_wake;
+
 static int uhci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
 {
 	struct uhci_hcd *uhci = hcd_to_uhci(hcd);
 	struct pci_dev *pdev = to_pci_dev(uhci_dev(uhci));
 	int rc = 0;
+	u16 pmc_enable = 0;
 
 	dev_dbg(uhci_dev(uhci), "%s\n", __func__);
 
@@ -192,6 +198,12 @@ static int uhci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
 			pci_write_config_byte(pdev, USBRES_INTEL,
 					USBPORT1EN | USBPORT2EN);
 	}
+  //CharlesTu, for PM
+	if (((hcd->self.busnum == 2) && enable_uhci0_wake) || ((hcd->self.busnum == 3) && enable_uhci1_wake)){
+		pci_read_config_word(to_pci_dev(uhci_dev(uhci)), 0x84, &pmc_enable);
+		pmc_enable |= 0x103;
+		pci_write_config_word(to_pci_dev(uhci_dev(uhci)), 0x84, pmc_enable);
+	}
 
 done_okay:
 	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
@@ -203,7 +215,19 @@ done:
 static int uhci_pci_resume(struct usb_hcd *hcd, bool hibernated)
 {
 	struct uhci_hcd *uhci = hcd_to_uhci(hcd);
-
+	u16 pmc_enable = 0;
+	/*CharlesTu,2009.08.30,patch uhci device disconnet irq nobody care issue		
+	* Before clear D3 mode ,disable UHCI resume interrupt 
+	* The right sequence: disconnect->wakeup->D0 mode->clear resume.
+	*/
+	if (enable_ehci_wake){
+		REG8_VAL(USB20_HOST_DEVICE_CFG_BASE_ADDR+0x0304) &= ~0x02;
+		REG8_VAL(USB20_HOST_DEVICE_CFG_BASE_ADDR+0x1504) &= ~0x02;
+	
+		pci_read_config_word(to_pci_dev(uhci_dev(uhci)), 0x84, &pmc_enable);
+		pmc_enable &= ~0x03;
+		pci_write_config_word(to_pci_dev(uhci_dev(uhci)), 0x84, pmc_enable);
+	}
 	dev_dbg(uhci_dev(uhci), "%s\n", __func__);
 
 	/* Since we aren't in D3 any more, it's safe to set this flag

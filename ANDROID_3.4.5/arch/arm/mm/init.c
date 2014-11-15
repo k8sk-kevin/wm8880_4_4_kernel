@@ -20,7 +20,7 @@
 #include <linux/highmem.h>
 #include <linux/gfp.h>
 #include <linux/memblock.h>
-
+#include <linux/suspend.h>
 #include <asm/mach-types.h>
 #include <asm/memblock.h>
 #include <asm/prom.h>
@@ -155,7 +155,8 @@ static void __init arm_bootmem_init(unsigned long start_pfn,
 	unsigned int boot_pages;
 	phys_addr_t bitmap;
 	pg_data_t *pgdat;
-
+	/*u32 uboot_start;
+	u32 uboot_end; */
 	/*
 	 * Allocate the bootmem bitmap page.  This must be in a region
 	 * of memory which has already been mapped.
@@ -198,6 +199,21 @@ static void __init arm_bootmem_init(unsigned long start_pfn,
 		reserve_bootmem(__pfn_to_phys(start),
 			        (end - start) << PAGE_SHIFT, BOOTMEM_DEFAULT);
 	}
+	
+	#if 0/*not needed in kernel resume path.*/
+	/*
+	  FIXME: This is hard-coded for WM3498 EVB.
+	  Mark u-boot used memory section as nosave.
+	  Thus, there will be no data needs to be restore to this area 
+	  so that u-boot code/data will not be overwritten during restoring 
+	  hibernation image from u-boot cmd_swsusp.c.
+	*/
+	uboot_start = 0x3C00000;	//start: 60MB
+	uboot_end = 0x4100000;		//end: 65MB
+	reserve_bootmem_node(pgdat, uboot_start, uboot_end - uboot_start,
+			BOOTMEM_DEFAULT);//Lch
+	register_nosave_region(uboot_start>>PAGE_SHIFT,uboot_end>>PAGE_SHIFT);//Lch	
+	#endif
 }
 
 #ifdef CONFIG_ZONE_DMA

@@ -907,4 +907,25 @@ config SCx200_ACB
 	  This support is also available as a module.  If so, the module
 	  will be called scx200_acb.
 
+config I2C_WMT
+    tristate "WonderMedia I2C Interface"
+    depends on ARCH_WMT && I2C && I2C_ALGOWMT
+    help
+      This supports the use of the WMT I2C interface found on the WMT 
+      Say Y if you have one of these. You should also say Y for the WMT 
+      I2C peripheral driver support below.
+
+      To compile this driver as a module, say M here: the
+      modules will be called i2c-wmt and i2c-algo-wmt.      
+config I2C1_WMT
+    bool
+    depends on ARCH_WMT && I2C && I2C_ALGOWMT
+    default y
+config I2C_SLAVE_WMT
+    bool "WonderMedia I2C-SLAVE Interface"
+    depends on ARCH_WMT && I2C_WMT
+    help
+      This supports the use of the WMT I2C SLAVE interface found on the WMT 
+      Say Y if you have one of these. You should also say Y for the WMT 
+      I2C peripheral driver support below.
 endmenu

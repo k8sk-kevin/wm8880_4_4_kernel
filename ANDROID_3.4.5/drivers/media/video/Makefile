@@ -141,6 +141,12 @@ obj-$(CONFIG_VIDEO_M32R_AR_M64278) += arv.o
 
 obj-$(CONFIG_VIDEO_CX2341X) += cx2341x.o
 
+#g_wmt_cmoscam-objs    += cmoscam.o 
+#obj-$(CONFIG_WMT_V4L2_CMOS) +=  g_wmt_cmoscam.o
+
+#g_wmt_tv-decoder-objs    += tv-decoder.o 
+#obj-$(CONFIG_WMT_V4L2_TV_DECODER) +=  g_wmt_tv-decoder.o
+
 obj-$(CONFIG_VIDEO_CAFE_CCIC) += marvell-ccic/
 obj-$(CONFIG_VIDEO_MMP_CAMERA) += marvell-ccic/
 

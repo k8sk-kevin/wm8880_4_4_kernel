@@ -62,6 +62,10 @@ ifeq ($(CONFIG_PXA_SHARPSL_DETECT_MACH_ID),y)
 OBJS		+= head-sharpsl.o
 endif
 
+ifeq ($(CONFIG_ARCH_WMT),y)
+OBJS		+= head-wmt.o
+endif
+
 ifeq ($(CONFIG_CPU_ENDIAN_BE32),y)
 ifeq ($(CONFIG_CPU_CP15),y)
 OBJS		+= big-endian.o

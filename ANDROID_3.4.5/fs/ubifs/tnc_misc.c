@@ -255,7 +255,58 @@ long ubifs_destroy_tnc_subtree(struct ubifs_znode *znode)
 		zn = ubifs_tnc_postorder_next(zn);
 	}
 }
+//add by Johnny Liu 2013.3.6
+int ubifs_read_buf_node(struct ubifs_info *c, void *buf, int type, 
+				int len, int lnum, int offs, struct ubifs_wbuf *wbuf)
+{
+	int err, record, overlap, temp_len = 0;
 
+read_again:
+	err = 0;
+	record = wbuf->offs + c->min_io_size;
+	overlap = (lnum == wbuf->lnum && (offs >= wbuf->offs) && (c->min_io_size > offs - wbuf->offs));
+	
+	if(overlap) {
+		if(offs + len <= record) {
+		memcpy(buf, wbuf->buf + offs - wbuf->offs, len);
+		goto check;
+		}
+		else {
+		temp_len = record - offs;
+		memcpy(buf, wbuf->buf + offs - wbuf->offs, temp_len);
+		offs += c->min_io_size;
+		}
+	}
+	wbuf->offs = (offs >> c->min_io_shift) << c->min_io_shift;
+	wbuf->lnum = lnum;
+	err = ubifs_leb_read(c, lnum, wbuf->buf, wbuf->offs, c->min_io_size, 0);
+	
+	if(err)
+		goto out_dump;
+	
+	if(overlap) {
+		memcpy(buf + temp_len, wbuf->buf, len - temp_len);
+		offs -= c->min_io_size;
+	} else 
+		goto read_again;
+check:
+
+	err = ubifs_check_node(c, buf, lnum, offs, 0, 0);
+	if (err) {
+		ubifs_err("expected node");
+		return err;
+	}
+
+	return 0;
+
+out_dump:
+	ubifs_err("bad node at LEB %d:%d, LEB mapping status %d", lnum, offs,
+	ubi_is_mapped(c->ubi, lnum));
+	ubifs_err("recordi is %d, len is %d", record, len);
+	dbg_dump_node(c, buf);
+	dbg_dump_stack();
+	return -EINVAL;
+}
 /**
  * read_znode - read an indexing node from flash and fill znode.
  * @c: UBIFS file-system description object
@@ -275,17 +326,24 @@ static int read_znode(struct ubifs_info *c, int lnum, int offs, int len,
 {
 	int i, err, type, cmp;
 	struct ubifs_idx_node *idx;
-
-	idx = kmalloc(c->max_idx_node_sz, GFP_NOFS);
+	struct ubifs_wbuf *wbuf;
+	//struct ubifs_ch *ch;
+	//idx = kmalloc(c->max_idx_node_sz, GFP_NOFS);
+	idx = (struct ubifs_idx_node *)c->buf;
 	if (!idx)
 		return -ENOMEM;
 
-	err = ubifs_read_node(c, idx, UBIFS_IDX_NODE, len, lnum, offs);
-	if (err < 0) {
-		kfree(idx);
+	//Johnny Liu 2013.3.6
+	//err = ubifs_read_node(c, idx, UBIFS_IDX_NODE, len, lnum, offs);
+	
+	wbuf = &c->idx_buf;
+	
+	err = ubifs_read_buf_node(c, idx, UBIFS_IDX_NODE, len, lnum, offs, wbuf);
+	
+	if(err < 0) {
+	//	kfree(idx);
 		return err;
 	}
-
 	znode->child_cnt = le16_to_cpu(idx->child_cnt);
 	znode->level = le16_to_cpu(idx->level);
 
@@ -382,7 +440,7 @@ static int read_znode(struct ubifs_info *c, int lnum, int offs, int len,
 		}
 	}
 
-	kfree(idx);
+//	kfree(idx);
 	return 0;
 
 out_dump:

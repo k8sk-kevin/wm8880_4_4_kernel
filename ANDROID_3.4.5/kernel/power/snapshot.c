@@ -1035,6 +1035,10 @@ copy_data_pages(struct memory_bitmap *copy_bm, struct memory_bitmap *orig_bm)
 {
 	struct zone *zone;
 	unsigned long pfn;
+	#ifdef _PRINT_PAGE_CRC_ //for debug.by roger.	
+		unsigned long crc_le;
+		unsigned char *virt_addr;
+	#endif
 
 	for_each_populated_zone(zone) {
 		unsigned long max_zone_pfn;
@@ -1052,6 +1056,12 @@ copy_data_pages(struct memory_bitmap *copy_bm, struct memory_bitmap *orig_bm)
 		if (unlikely(pfn == BM_END_OF_MAP))
 			break;
 		copy_data_page(memory_bm_next_pfn(copy_bm), pfn);
+		#ifdef _PRINT_PAGE_CRC_ //for debug.by roger.
+		virt_addr = page_address(pfn_to_page(pfn));
+		crc_le = crc32_le(0, virt_addr, PAGE_SIZE);
+		printk("pfn:%lu:phy_addr:0x%x:crc:%lu:virt_addr:0x%x\n",
+						pfn, pfn*PAGE_SIZE, crc_le, virt_addr);
+		#endif
 	}
 }
 
@@ -1085,6 +1095,16 @@ static struct memory_bitmap copy_bm;
  *	Suspend pages are alocated before the atomic copy is made, so we
  *	need to release them after the resume.
  */
+
+void swsusp_free_page(void *buffer)
+{
+	if (swsusp_page_is_forbidden(virt_to_page(buffer)) &&
+	    swsusp_page_is_free(virt_to_page(buffer))) {
+		swsusp_unset_page_forbidden(virt_to_page(buffer));
+		swsusp_unset_page_free(virt_to_page(buffer));
+		__free_page(virt_to_page(buffer));
+	}
+}
 
 void swsusp_free(void)
 {
@@ -1309,6 +1329,9 @@ int hibernate_preallocate_memory(void)
 	unsigned long alloc, save_highmem, pages_highmem, avail_normal;
 	struct timeval start, stop;
 	int error;
+	unsigned long shrinked_size;//for shrink_all_memory
+	unsigned long shrink_size;	//for shrink_all_memory
+	int i;						//for shrink_all_memory
 
 	printk(KERN_INFO "PM: Preallocating image memory... ");
 	do_gettimeofday(&start);
@@ -1357,6 +1380,11 @@ int hibernate_preallocate_memory(void)
 	size = DIV_ROUND_UP(image_size, PAGE_SIZE);
 	if (size > max_size)
 		size = max_size;
+	printk(KERN_CRIT"totalreserve_pages:%lu MB : "\
+					"reserved_size:%lu MB\n",
+		totalreserve_pages/256, reserved_size>>20);	
+#if 0
+	/*Skip this part to Force to run shrink_all_memory*/
 	/*
 	 * If the desired number of image pages is at least as large as the
 	 * current number of saveable pages in memory, allocate page frames for
@@ -1367,9 +1395,10 @@ int hibernate_preallocate_memory(void)
 		pages += preallocate_image_memory(saveable - pages, avail_normal);
 		goto out;
 	}
-
+#endif
 	/* Estimate the minimum size of the image. */
 	pages = minimum_image_size(saveable);
+	printk(KERN_CRIT"minimum_image_size:%lu MB\n", pages/256);
 	/*
 	 * To avoid excessive pressure on the normal zone, leave room in it to
 	 * accommodate an image of the minimum size (unless it's already too
@@ -1379,17 +1408,27 @@ int hibernate_preallocate_memory(void)
 		avail_normal -= pages;
 	else
 		avail_normal = 0;
+#if 0
 	if (size < pages)
 		size = min_t(unsigned long, pages, max_size);
-
+#else
+	size = pages;//make sure size=minimum_image_size so that shrink_size is valid.
+#endif
 	/*
 	 * Let the memory management subsystem know that we're going to need a
 	 * large number of page frames to allocate and make it free some memory.
 	 * NOTE: If this is not done, performance will be hurt badly in some
 	 * test cases.
 	 */
-	shrink_all_memory(saveable - size);
-
+	shrink_size = (saveable - size) >0 ? (saveable - size) : 0;
+	
+	printk(KERN_CRIT "\nsaveable:%lu MB : size:%lu MB : shrink_size : %lu MB\n", 
+					saveable/256, size/256, shrink_size/256);
+	
+	for (shrinked_size=0, i=0; i<5; i++){		
+		shrinked_size += shrink_all_memory(shrink_size);
+	}
+	printk(KERN_CRIT "shrink_all_memory: %lu MB\n", shrinked_size/256);
 	/*
 	 * The number of saveable pages in memory was too high, so apply some
 	 * pressure to decrease it.  First, make room for the largest possible
@@ -1398,15 +1437,26 @@ int hibernate_preallocate_memory(void)
 	 * highmem and non-highmem zones separately.
 	 */
 	pages_highmem = preallocate_image_highmem(highmem / 2);
-	alloc = (count - max_size) - pages_highmem;
+	//alloc = (count - max_size) - pages_highmem;	//original, which wastes memory.
+	//alloc  = saveable - shrinked_size - pages_highmem; //only alloc we actually need.
+	alloc =  (count - max_size) > (saveable - shrinked_size) ?
+		(saveable - shrinked_size) - pages_highmem
+		:(count - max_size) - pages_highmem;	
 	pages = preallocate_image_memory(alloc, avail_normal);
+	printk("\n%s:alloc(MB):%lu:count(MB):%lu:max_size(MB):%lu:pages_highmem(MB):%lu\n",
+		__FUNCTION__, alloc/256, count/256, max_size/256, pages_highmem/256);
+	printk("%s:prealloc pages(MB):%lu:avail_normal(MB):%lu\n", __FUNCTION__, pages/256, avail_normal/256);
+
 	if (pages < alloc) {
+		printk(KERN_CRIT"Not Enough Pages in LowMem. Trying HighMem\n");
 		/* We have exhausted non-highmem pages, try highmem. */
 		alloc -= pages;
 		pages += pages_highmem;
 		pages_highmem = preallocate_image_highmem(alloc);
-		if (pages_highmem < alloc)
+		if (pages_highmem < alloc){
+			printk(KERN_CRIT"Can not Preallocate Enough Pages.\n");
 			goto err_out;
+		}
 		pages += pages_highmem;
 		/*
 		 * size is the desired number of saveable pages to leave in
@@ -1419,6 +1469,10 @@ int hibernate_preallocate_memory(void)
 		 * There are approximately max_size saveable pages at this point
 		 * and we want to reduce this number down to size.
 		 */
+		#if 0
+		/*skip this to avoid Wasting too much time on shrinking to 
+		  reduce image size
+		*/
 		alloc = max_size - size;
 		size = preallocate_highmem_fraction(alloc, highmem, count);
 		pages_highmem += size;
@@ -1426,6 +1480,7 @@ int hibernate_preallocate_memory(void)
 		size = preallocate_image_memory(alloc, avail_normal);
 		pages_highmem += preallocate_image_highmem(alloc - size);
 		pages += pages_highmem + size;
+		#endif
 	}
 
 	/*
@@ -1443,7 +1498,7 @@ int hibernate_preallocate_memory(void)
 	return 0;
 
  err_out:
-	printk(KERN_CONT "\n");
+	printk(KERN_CONT "Can not Pre-Allocate Enough Pages\n");
 	swsusp_free();
 	return -ENOMEM;
 }
@@ -1624,11 +1679,14 @@ static int init_header_complete(struct swsusp_info *info)
 {
 	memcpy(&info->uts, init_utsname(), sizeof(struct new_utsname));
 	info->version_code = LINUX_VERSION_CODE;
+	swsusp_arch_add_info(info->archdata, sizeof(info->archdata));//save extra info for u-boot resume.
 	return 0;
 }
 
 static char *check_image_kernel(struct swsusp_info *info)
 {
+	extern pgd_t *idmap_pgd;/*check if idmap_pgd changed.*/
+
 	if (info->version_code != LINUX_VERSION_CODE)
 		return "kernel version";
 	if (strcmp(info->uts.sysname,init_utsname()->sysname))
@@ -1639,9 +1697,15 @@ static char *check_image_kernel(struct swsusp_info *info)
 		return "version";
 	if (strcmp(info->uts.machine,init_utsname()->machine))
 		return "machine";
+	/* If idmap_pgd changed, mmu page table will be corrupted during hibernation restore */
+	printk("\n check_image_kernel:\n info->archdata[4]=0x%x, idmap_pgd=0x%x\n", ((u32 *)info->archdata)[4],(u32)idmap_pgd);
+	if (((u32 *)info->archdata)[4] != (u32)idmap_pgd)
+		return "idmap_pgd changed";
 	return NULL;
 }
 #endif /* CONFIG_ARCH_HIBERNATION_HEADER */
+
+void __weak swsusp_arch_add_info(char *archdata, size_t size) {}
 
 unsigned long snapshot_get_image_size(void)
 {
@@ -2157,6 +2221,9 @@ prepare_image(struct memory_bitmap *new_bm, struct memory_bitmap *bm)
  *	get_buffer - compute the address that snapshot_write_next() should
  *	set for its caller to write to.
  */
+#ifdef _PRINT_PAGE_CRC_
+	int is_original_addr=0;//flag to indicate if buffer address is the origianl or not.
+#endif
 
 static void *get_buffer(struct memory_bitmap *bm, struct chain_allocator *ca)
 {
@@ -2171,15 +2238,30 @@ static void *get_buffer(struct memory_bitmap *bm, struct chain_allocator *ca)
 	if (PageHighMem(page))
 		return get_highmem_page_buffer(page, ca);
 
+#ifdef _PRINT_PAGE_CRC_ 
+	if (swsusp_page_is_forbidden(page) && swsusp_page_is_free(page))
+	{	/* We have allocated the "original" page frame and we can
+		 * use it directly to store the loaded page.
+		 */
+	
+		is_original_addr=1;
+	
+		return page_address(page);
+	}
+#else
 	if (swsusp_page_is_forbidden(page) && swsusp_page_is_free(page))
 		/* We have allocated the "original" page frame and we can
 		 * use it directly to store the loaded page.
 		 */
 		return page_address(page);
+#endif
 
 	/* The "original" page frame has not been allocated and we have to
 	 * use a "safe" page frame to store the loaded page.
 	 */
+	#ifdef _PRINT_PAGE_CRC_
+	is_original_addr = 0;
+	#endif	 
 	pbe = chain_alloc(ca, sizeof(struct pbe));
 	if (!pbe) {
 		swsusp_free();

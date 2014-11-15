@@ -89,6 +89,8 @@ static void suspend_rh(struct uhci_hcd *uhci, enum uhci_rh_state new_state);
 static void wakeup_rh(struct uhci_hcd *uhci);
 static void uhci_get_current_frame_number(struct uhci_hcd *uhci);
 
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);	
+
 /*
  * Calculate the link pointer DMA value for the first Skeleton QH in a frame.
  */
@@ -338,6 +340,11 @@ __acquires(uhci->lock)
 
 	uhci->RD_enable = !!int_enable;
 	uhci_writew(uhci, int_enable, USBINTR);
+	//gri
+	uhci_writew(uhci, 0, USBCMD);
+	mb();
+	while (!(uhci_readw(uhci, USBSTS) & USBSTS_HCH));
+	//
 	uhci_writew(uhci, egsm_enable | USBCMD_CF, USBCMD);
 	mb();
 	udelay(5);
@@ -855,7 +862,7 @@ static int __init uhci_hcd_init(void)
 	int retval = -ENOMEM;
 
 	if (usb_disabled())
-		return -ENODEV;
+		return -ENODEV;	
 
 	printk(KERN_INFO "uhci_hcd: " DRIVER_DESC "%s\n",
 			ignore_oc ? ", overcurrent ignored" : "");

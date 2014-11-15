@@ -1100,6 +1100,16 @@ static void mmc_sd_detect(struct mmc_host *host)
 #endif
 	mmc_release_host(host);
 
+#ifdef CONFIG_MMC_UNSAFE_RESUME
+	if (err || (host->card_attath_status == card_attach_status_change)) {
+		host->card_attath_status = card_attach_status_unchange;
+		mmc_sd_remove(host);
+		mmc_claim_host(host);
+		mmc_detach_bus(host);
+		mmc_power_off(host);
+		mmc_release_host(host);
+	}
+#else
 	if (err) {
 		mmc_sd_remove(host);
 
@@ -1108,6 +1118,7 @@ static void mmc_sd_detect(struct mmc_host *host)
 		mmc_power_off(host);
 		mmc_release_host(host);
 	}
+#endif	
 }
 
 /*
@@ -1162,6 +1173,11 @@ static int mmc_sd_resume(struct mmc_host *host)
 	err = mmc_sd_init_card(host, host->ocr, host->card);
 #endif
 	mmc_release_host(host);
+
+#ifdef CONFIG_MMC_UNSAFE_RESUME
+	if (err)
+		host->card_attath_status = card_attach_status_change;
+#endif
 
 	return err;
 }

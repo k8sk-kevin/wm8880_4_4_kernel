@@ -90,6 +90,11 @@ config BATTERY_DS2781
 
 	  If you are unsure, say N.
 
+config BATTERY_WMT
+	tristate "wmt battery driver (wonder media & others)"
+	help
+	  Say Y here to enable support for batteries with wmt chip.	  
+
 config BATTERY_DS2782
 	tristate "DS2782/DS2786 standalone gas-gauge"
 	depends on I2C

@@ -4,13 +4,19 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/utsname.h>
+#include <asm/mach/version.h>
 
 static int version_proc_show(struct seq_file *m, void *v)
 {
+#if 1 /* add to show kernel version */
+    seq_printf(m, "%s\n",linux_banner);
+    seq_printf(m, "Kernel %s (%s - %s)\n",CONFIG_KERNEL_VERSION,__DATE__,__TIME__);
+#else
 	seq_printf(m, linux_proc_banner,
 		utsname()->sysname,
 		utsname()->release,
 		utsname()->version);
+#endif
 	return 0;
 }
 

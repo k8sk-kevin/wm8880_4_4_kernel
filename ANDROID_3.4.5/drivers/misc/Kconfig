@@ -60,6 +60,13 @@ config ATMEL_PWM
 	  purposes including software controlled power-efficient backlights
 	  on LCD displays, motor control, and waveform generation.
 
+config BCM2079X_NFC
+        tristate "bcm2079x NFC driver"
+        default m
+        ---help---
+          Say yes if you want bcm2079x Near Field Communication driver.
+          This is for i2c connected version. If unsure, say N here.
+          
 config AB8500_PWM
 	bool "AB8500 PWM support"
 	depends on AB8500_CORE && ARCH_U8500
@@ -517,6 +524,19 @@ config WL127X_RFKILL
 	---help---
 	 Creates an rfkill entry in sysfs for power control of Bluetooth
 	 TI wl127x chips.
+
+config PN547_NFC
+	tristate "PN547 NFC driver"
+	depends on I2C
+	select CRC_CCITT
+	default n
+	---help---
+	  Say yes if you want PN547 Near Field Communication driver.
+	  This is for i2c connected version. If unsure, say N here.
+
+	  To compile this driver as a module, choose m here. The module will
+	  be called pn547.	 
+	 
 	 
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"

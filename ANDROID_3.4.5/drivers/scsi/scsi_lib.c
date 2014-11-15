@@ -1165,7 +1165,10 @@ EXPORT_SYMBOL(scsi_setup_fs_cmnd);
 int scsi_prep_state_check(struct scsi_device *sdev, struct request *req)
 {
 	int ret = BLKPREP_OK;
-
+	if(sdev==NULL){
+		ret = BLKPREP_KILL;
+		return ret;
+	}
 	/*
 	 * If the device is not in running state we will reject some
 	 * or all commands.

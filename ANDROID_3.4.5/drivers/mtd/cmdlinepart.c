@@ -90,8 +90,8 @@ static struct mtd_partition * newpart(char *s,
                                       int extra_mem_size)
 {
 	struct mtd_partition *parts;
-	unsigned long size;
-	unsigned long offset = OFFSET_CONTINUOUS;
+	unsigned long long size;
+	unsigned long long offset = OFFSET_CONTINUOUS;
 	char *name;
 	int name_len;
 	unsigned char *extra_mem;
@@ -305,7 +305,9 @@ static int mtdpart_setup_real(char *s)
 	}
 	return 1;
 }
-
+#ifdef CONFIG_MTD_NAND_WMT
+extern struct mtd_partition nand_partitions[];
+#endif
 /*
  * Main function to be called from the MTD mapping driver/device to
  * obtain the partitioning information. At this point the command line
@@ -317,7 +319,7 @@ static int parse_cmdline_partitions(struct mtd_info *master,
 				    struct mtd_partition **pparts,
 				    struct mtd_part_parser_data *data)
 {
-	unsigned long offset;
+	unsigned long long offset;
 	int i;
 	struct cmdline_mtd_partition *part;
 	const char *mtd_id = master->name;
@@ -348,6 +350,15 @@ static int parse_cmdline_partitions(struct mtd_info *master,
 				}
 				offset += part->parts[i].size;
 			}
+			#ifdef CONFIG_MTD_NAND_WMT
+			if (!strcmp(part->mtd_id, "WMT.nand")) {
+				for (i = 0; i < part->num_parts; i++) {
+					strcpy(nand_partitions[i].name, part->parts[i].name);
+					nand_partitions[i].offset = part->parts[i].offset;
+					nand_partitions[i].size = part->parts[i].size;
+				}
+			}
+			#endif
 			*pparts = kmemdup(part->parts,
 					sizeof(*part->parts) * part->num_parts,
 					GFP_KERNEL);

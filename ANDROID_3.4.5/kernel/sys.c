@@ -45,6 +45,7 @@
 #include <linux/syscalls.h>
 #include <linux/kprobes.h>
 #include <linux/user_namespace.h>
+#include <linux/mtd/mtd.h>
 
 #include <linux/kmsg_dump.h>
 /* Move somewhere else to avoid recompiling? */
@@ -322,6 +323,22 @@ void kernel_restart_prepare(char *cmd)
 	device_shutdown();
 	syscore_shutdown();
 }
+extern int wmt_setsyspara(char *varname, char *varval);
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+char *strtok(char *str, char *ctrl)
+{
+	char *p=str,*q=ctrl,*r; 
+	while (p&&q&&*p&&*q) {
+		for(r=p,q=ctrl;*r&&*q&&*r==*q;r++,q++);
+			if(q&&*q)
+				p++; // not match change to next char
+			else {
+				*p='\0';
+				break;
+			} // catch and return
+	}
+	return str; 
+}
 
 /**
  *	register_reboot_notifier - Register function to be called at reboot time
@@ -364,13 +381,136 @@ EXPORT_SYMBOL(unregister_reboot_notifier);
  */
 void kernel_restart(char *cmd)
 {
+	int ret = 0, searched = 0, len = 0x360, lockable = 0, unlock = 0, error;
+	char buf[0x360], *token = NULL, *p = NULL;
 	kernel_restart_prepare(cmd);
-	if (!cmd)
+	
+	ret = wmt_getsyspara("wmt.rsa.pem", buf, &len);
+	if (ret && ret != 10){
+		printk("kernel_restart : ret %d\n",ret);
+		lockable = 0;
+	}
+	if (!cmd) {
 		printk(KERN_EMERG "Restarting system.\n");
-	else
+		ret = wmt_getsyspara("boot-method", buf, &len);
+		if (ret) {
+			printk(KERN_EMERG "get env boot-method fail\n");
+			goto NO_SET_ENV;
+		}
+		printk(KERN_EMERG "boot-method = %s\n", buf);
+	
+		p = strstr((char *)buf, "recovery");
+			if (p == NULL)
+				goto NO_SET_ENV;
+			if (strcmp(p, "recovery") == 0) {
+				token = strtok((char *)buf, "recovery");
+			 	if (token) {
+			 		if (lockable == 1) {
+			 			if (wmt_sf_prot == 0)
+							goto NO_SET_ENV;
+			 			ret = wmt_sf_prot(0);
+			 			unlock = 1;
+			 			if (ret)
+							goto env_end;
+					}
+			 		strcat(token, "normal");
+			 		printk(KERN_EMERG "set boot-method = %s ", token);
+					ret = wmt_setsyspara("boot-method", token);
+					if (ret)
+						printk(KERN_EMERG " fail\n");
+					else
+						printk(KERN_EMERG " success\n");
+
+					if (lockable == 1) {
+						ret = wmt_sf_prot(1);
+						unlock = 0;
+env_end:
+						if (ret)
+							printk(KERN_EMERG "env lock check fail\n");
+					}
+				}
+			}
+	} else {
 		printk(KERN_EMERG "Restarting system with command '%s'.\n", cmd);
+		ret = wmt_getsyspara("boot-method", buf, &len);
+		if (ret) {
+			printk(KERN_EMERG "get env boot-method fail\n");
+			goto NO_SET_ENV;
+		}
+		printk(KERN_EMERG "boot-method = %s\n", buf);
+		/* //debug
+		if (strcmp(buf, "boot-nand") == 0)
+			strcat(buf, "-normal");
+		printk(KERN_EMERG "boot-method = %s\n", buf);
+		*/
+		
+		if (strcmp(cmd, "recovery") == 0) {
+			p = strstr((char *)buf, "normal");
+			if (p == NULL)
+				goto NO_SET_ENV;
+			if (strcmp(p, "normal") == 0)
+				searched = 1;
+		} else {
+			p = strstr((char *)buf, "recovery");
+			if (p == NULL)
+				goto NO_SET_ENV;
+			if (strcmp(p, "recovery") == 0)
+				searched = 2;
+		}
+
+		//printk(KERN_EMERG "searched = %s\n", p);
+		if (searched == 0 || p == NULL) {
+			goto NO_SET_ENV;
+		} else if (searched == 1) {
+		 	token = strtok((char *)buf, "normal");
+		 	strcat(token, "recovery");
+		} else if (searched == 2) {
+			token = strtok((char *)buf, "recovery");
+		 	strcat(token, "normal");
+		}
+		printk(KERN_EMERG "set boot-method = %s,lockable %d\n", token,lockable);
+		
+		if (token) {
+			if (lockable == 1) {
+				if (wmt_sf_prot == 0){
+					goto NO_SET_ENV;
+				}
+				ret = wmt_sf_prot(0);
+				unlock = 1;
+				if (ret){
+					goto env_set_end;
+				}
+			}
+
+			ret = wmt_setsyspara("boot-method", token);
+			if (ret)
+				printk(KERN_EMERG "set env fail\n");
+			else
+				printk(KERN_EMERG "set env success\n");
+
+			if (lockable == 1) {
+				ret = wmt_sf_prot(1);
+				unlock = 0;
+env_set_end:
+				if (ret)
+					printk(KERN_EMERG "env lock check fail\n");
+			}
+		}
+	}
+NO_SET_ENV:
+
+	if (lockable == 1 && unlock == 1) {
+		
+		ret = wmt_sf_prot(1);
+		if (ret)
+			printk(KERN_EMERG "env lock err\n");
+	}
 	kmsg_dump(KMSG_DUMP_RESTART);
+	error = disable_nonboot_cpus();
+	if (error)
+		printk("Lch-%s: disable_nonboot_cpus fail error %d\n",__func__,error);
 	machine_restart(cmd);
+	
 }
 EXPORT_SYMBOL_GPL(kernel_restart);
 

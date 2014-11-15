@@ -396,6 +396,33 @@ config SPI_XILINX
 
 	  Or for the DS570, see "XPS Serial Peripheral Interface (SPI) (v2.00b)"
 
+# WonderMedia SPI driver
+config WMT_NEWSPI_SUPPORT
+	tristate "WonderMedia SPI Bus Support"
+	default y
+	depends on ARCH_WMT
+	    help
+	      If you say yes here you get support for the WMT chip.
+	      This is proprietary driver for WMT
+
+	      This driver can also be built as a module.  If so, the module
+	      will be called wmt_spi.ko
+# WonderMedia SPI driver
+config WMT_NEWSPI1_SUPPORT
+	tristate "WonderMedia SPI 1 Bus Support"
+	default n
+	depends on ARCH_WMT
+	    help
+	      If you say yes here you get support for the WMT chip.
+	      This is proprietary driver for WMT
+
+	      This driver can also be built as a module.  If so, the module
+	      will be called wmt_spi.ko
+
+config WMT_SPISLAVE1_SUPPORT
+	tristate "WMT SPI1 SLAVE DRIVER SUPPORT"
+	default n
+
 config SPI_NUC900
 	tristate "Nuvoton NUC900 series SPI"
 	depends on ARCH_W90X900 && EXPERIMENTAL

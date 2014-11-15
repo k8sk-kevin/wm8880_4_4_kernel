@@ -655,7 +655,8 @@ static int qh_unlink_periodic(struct ehci_hcd *ehci, struct ehci_qh *qh)
 	qh_put (qh);
 
 	/* maybe turn off periodic schedule */
-	return disable_periodic(ehci);
+	//return disable_periodic(ehci);
+	return 0;
 }
 
 static void intr_deschedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
@@ -1767,7 +1768,7 @@ itd_complete (
 	ehci_urb_done(ehci, urb, 0);
 	retval = true;
 	urb = NULL;
-	(void) disable_periodic(ehci);
+	//(void) disable_periodic(ehci); gri
 	ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs--;
 
 	if (ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs == 0) {
@@ -2163,7 +2164,7 @@ sitd_complete (
 	ehci_urb_done(ehci, urb, 0);
 	retval = true;
 	urb = NULL;
-	(void) disable_periodic(ehci);
+	//(void) disable_periodic(ehci);//gri
 	ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs--;
 
 	if (ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs == 0) {

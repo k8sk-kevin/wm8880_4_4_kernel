@@ -31,6 +31,7 @@ obj-$(CONFIG_USB_MV_UDC)	+= mv_udc.o
 mv_udc-y			:= mv_udc_core.o
 obj-$(CONFIG_USB_CI13XXX_MSM)	+= ci13xxx_msm.o
 obj-$(CONFIG_USB_FUSB300)	+= fusb300_udc.o
+obj-$(CONFIG_USB_WMT)			+= udc_wmt.o
 
 #
 # USB gadget drivers
@@ -73,3 +74,5 @@ obj-$(CONFIG_USB_G_WEBCAM)	+= g_webcam.o
 obj-$(CONFIG_USB_G_NCM)		+= g_ncm.o
 obj-$(CONFIG_USB_G_ACM_MS)	+= g_acm_ms.o
 obj-$(CONFIG_USB_G_ANDROID)	+= g_android.o
+obj-y += rawbulk.o
+obj-y += rawbulk_transfer.o

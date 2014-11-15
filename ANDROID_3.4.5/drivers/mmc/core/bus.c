@@ -27,21 +27,34 @@
 
 #define to_mmc_driver(d)	container_of(d, struct mmc_driver, drv)
 
+#if 0
+#define DBG(x...)	printk(KERN_ALERT x)
+#else
+#define DBG(x...)	do { } while (0)
+#endif
+
 static ssize_t mmc_type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	struct mmc_card *card = mmc_dev_to_card(dev);
 
+	DBG("[%s] s\n",__func__);
+
 	switch (card->type) {
 	case MMC_TYPE_MMC:
+		DBG("[%s] e1\n",__func__);
 		return sprintf(buf, "MMC\n");
 	case MMC_TYPE_SD:
+		DBG("[%s] e2\n",__func__);
 		return sprintf(buf, "SD\n");
 	case MMC_TYPE_SDIO:
+		DBG("[%s] e3\n",__func__);
 		return sprintf(buf, "SDIO\n");
 	case MMC_TYPE_SD_COMBO:
+		DBG("[%s] e4\n",__func__);
 		return sprintf(buf, "SDcombo\n");
 	default:
+		DBG("[%s] e5\n",__func__);
 		return -EFAULT;
 	}
 }
@@ -58,6 +71,7 @@ static struct device_attribute mmc_dev_attrs[] = {
  */
 static int mmc_bus_match(struct device *dev, struct device_driver *drv)
 {
+	DBG("[%s]\n",__func__);
 	return 1;
 }
 
@@ -67,6 +81,8 @@ mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	const char *type;
 	int retval = 0;
+
+	DBG("[%s] s\n",__func__);
 
 	switch (card->type) {
 	case MMC_TYPE_MMC:
@@ -87,13 +103,17 @@ mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 
 	if (type) {
 		retval = add_uevent_var(env, "MMC_TYPE=%s", type);
-		if (retval)
+		if (retval) {
+			DBG("[%s] e1\n",__func__);
 			return retval;
+		}
 	}
 
 	retval = add_uevent_var(env, "MMC_NAME=%s", mmc_card_name(card));
-	if (retval)
+	if (retval) {
+		DBG("[%s] e2\n",__func__);
 		return retval;
+	}
 
 	/*
 	 * Request the mmc_block device.  Note: that this is a direct request
@@ -101,6 +121,7 @@ mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 	 */
 	retval = add_uevent_var(env, "MODALIAS=mmc:block");
 
+	DBG("[%s] e3\n",__func__);
 	return retval;
 }
 
@@ -109,6 +130,7 @@ static int mmc_bus_probe(struct device *dev)
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
 
+	DBG("[%s]\n",__func__);
 	return drv->probe(card);
 }
 
@@ -117,8 +139,11 @@ static int mmc_bus_remove(struct device *dev)
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
 
+	DBG("[%s] s\n",__func__);
+	
 	drv->remove(card);
 
+	DBG("[%s] e\n",__func__);
 	return 0;
 }
 
@@ -126,10 +151,15 @@ static int mmc_bus_suspend(struct device *dev)
 {
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
+	pm_message_t state = { PM_EVENT_SUSPEND };
 	int ret = 0;
 
+	DBG("[%s] s\n",__func__);
+	
 	if (dev->driver && drv->suspend)
 		ret = drv->suspend(card);
+
+	DBG("[%s] e\n",__func__);
 	return ret;
 }
 
@@ -139,8 +169,12 @@ static int mmc_bus_resume(struct device *dev)
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	int ret = 0;
 
+	DBG("[%s] s\n",__func__);
+	
 	if (dev->driver && drv->resume)
 		ret = drv->resume(card);
+
+	DBG("[%s] e\n",__func__);
 	return ret;
 }
 
@@ -149,20 +183,44 @@ static int mmc_bus_resume(struct device *dev)
 static int mmc_runtime_suspend(struct device *dev)
 {
 	struct mmc_card *card = mmc_dev_to_card(dev);
+	int ret;
+	
+	DBG("[%s] s\n",__func__);
 
-	return mmc_power_save_host(card->host);
+	ret = mmc_power_save_host(card->host);
+	
+	DBG("[%s] e\n",__func__);
+	/*return mmc_power_save_host(card->host);*/
+	return ret;
+
 }
 
 static int mmc_runtime_resume(struct device *dev)
 {
 	struct mmc_card *card = mmc_dev_to_card(dev);
+	int ret;
+	
+	DBG("[%s] s\n",__func__);
 
-	return mmc_power_restore_host(card->host);
+	ret = mmc_power_restore_host(card->host);
+	
+	DBG("[%s] e\n",__func__);
+	/*return mmc_power_restore_host(card->host);*/
+	return ret;
+
 }
 
 static int mmc_runtime_idle(struct device *dev)
 {
-	return pm_runtime_suspend(dev);
+	int ret;
+	
+	DBG("[%s] s\n",__func__);
+
+	ret = pm_runtime_suspend(dev);
+
+	DBG("[%s] e\n",__func__);
+	/*return pm_runtime_suspend(dev);*/
+	return ret;
 }
 
 #endif /* !CONFIG_PM_RUNTIME */
@@ -185,12 +243,24 @@ static struct bus_type mmc_bus_type = {
 
 int mmc_register_bus(void)
 {
-	return bus_register(&mmc_bus_type);
+	int ret;
+
+	DBG("[%s] s\n",__func__);
+
+	ret = bus_register(&mmc_bus_type);
+
+	DBG("[%s] e\n",__func__);
+	return ret;
+	/*return bus_register(&mmc_bus_type);*/
 }
 
 void mmc_unregister_bus(void)
 {
+	DBG("[%s] s\n",__func__);
+	
 	bus_unregister(&mmc_bus_type);
+	
+	DBG("[%s] e\n",__func__);
 }
 
 /**
@@ -199,8 +269,17 @@ void mmc_unregister_bus(void)
  */
 int mmc_register_driver(struct mmc_driver *drv)
 {
+	int ret;
+
+	DBG("[%s] s\n",__func__);
+
 	drv->drv.bus = &mmc_bus_type;
-	return driver_register(&drv->drv);
+	ret = driver_register(&drv->drv);
+
+	DBG("[%s] e\n",__func__);
+	/*return driver_register(&drv->drv);*/
+	return ret;
+
 }
 
 EXPORT_SYMBOL(mmc_register_driver);
@@ -211,8 +290,12 @@ EXPORT_SYMBOL(mmc_register_driver);
  */
 void mmc_unregister_driver(struct mmc_driver *drv)
 {
+	DBG("[%s] s\n",__func__);
+	
 	drv->drv.bus = &mmc_bus_type;
 	driver_unregister(&drv->drv);
+
+	DBG("[%s] e\n",__func__);
 }
 
 EXPORT_SYMBOL(mmc_unregister_driver);
@@ -221,12 +304,16 @@ static void mmc_release_card(struct device *dev)
 {
 	struct mmc_card *card = mmc_dev_to_card(dev);
 
+	DBG("[%s] s\n",__func__);
+
 	sdio_free_common_cis(card);
 
 	if (card->info)
 		kfree(card->info);
 
 	kfree(card);
+	
+	DBG("[%s] e\n",__func__);
 }
 
 /*
@@ -235,10 +322,13 @@ static void mmc_release_card(struct device *dev)
 struct mmc_card *mmc_alloc_card(struct mmc_host *host, struct device_type *type)
 {
 	struct mmc_card *card;
+	DBG("[%s] s\n",__func__);
 
 	card = kzalloc(sizeof(struct mmc_card), GFP_KERNEL);
-	if (!card)
+	if (!card) {
+		DBG("[%s] e1\n",__func__);
 		return ERR_PTR(-ENOMEM);
+	}
 
 	card->host = host;
 
@@ -249,6 +339,7 @@ struct mmc_card *mmc_alloc_card(struct mmc_host *host, struct device_type *type)
 	card->dev.release = mmc_release_card;
 	card->dev.type = type;
 
+	DBG("[%s] e2\n",__func__);
 	return card;
 }
 
@@ -267,7 +358,7 @@ int mmc_add_card(struct mmc_card *card)
 		[UHS_SDR104_BUS_SPEED] = "SDR104 ",
 		[UHS_DDR50_BUS_SPEED] = "DDR50 ",
 	};
-
+	DBG("[%s] s\n",__func__);
 
 	dev_set_name(&card->dev, "%s:%04x", mmc_hostname(card->host), card->rca);
 
@@ -322,11 +413,14 @@ int mmc_add_card(struct mmc_card *card)
 #endif
 
 	ret = device_add(&card->dev);
-	if (ret)
+	if (ret) {
+		DBG("[%s] e1\n",__func__);
 		return ret;
+	}
 
 	mmc_card_set_present(card);
 
+	DBG("[%s] e2\n",__func__);
 	return 0;
 }
 
@@ -336,6 +430,8 @@ int mmc_add_card(struct mmc_card *card)
  */
 void mmc_remove_card(struct mmc_card *card)
 {
+	DBG("[%s] s\n",__func__);
+
 #ifdef CONFIG_DEBUG_FS
 	mmc_remove_card_debugfs(card);
 #endif
@@ -352,5 +448,7 @@ void mmc_remove_card(struct mmc_card *card)
 	}
 
 	put_device(&card->dev);
+	
+	DBG("[%s] e\n",__func__);	
 }
 

@@ -32,6 +32,18 @@
 #define PN544_MAX_I2C_TRANSFER	0x0400
 #define PN544_MSG_MAX_SIZE	0x21 /* at normal HCI mode */
 
+
+#define PN544_MAGIC	0xE9
+
+/*
+ * PN544 power control via ioctl
+ * PN544_SET_PWR(0): power off
+ * PN544_SET_PWR(1): power on
+ * PN544_SET_PWR(2): reset and power on with firmware download enabled
+ */
+#define PN544_SET_PWR	_IOW(PN544_MAGIC, 0x01, unsigned int)
+
+
 /* ioctl */
 #define PN544_CHAR_BASE		'P'
 #define PN544_IOR(num, dtype)	_IOR(PN544_CHAR_BASE, num, dtype)
@@ -41,6 +53,7 @@
 #define PN544_GET_DEBUG		PN544_IOW(3, unsigned int)
 #define PN544_SET_DEBUG		PN544_IOW(4, unsigned int)
 
+//#define PN544_SET_PWR		PN544_IOW(5, unsigned int) //add 2014-7-10
 /* Timing restrictions (ms) */
 #define PN544_RESETVEN_TIME	30 /* 7 */
 #define PN544_PVDDVEN_TIME	0
@@ -91,6 +104,10 @@ struct pn544_nfc_platform_data {
 	void (*enable) (int fw);
 	int (*test) (void);
 	void (*disable) (void);
+	int irq_gpio, ven_gpio, firm_gpio;
+	//int irq_enable, ven_enable, firm_enable;
+	int irq_active, ven_active, firm_active;
+	
 };
 #endif /* __KERNEL__ */
 

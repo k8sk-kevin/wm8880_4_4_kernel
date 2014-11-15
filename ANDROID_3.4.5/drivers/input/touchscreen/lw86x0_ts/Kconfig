@@ -1,0 +1,11 @@
+config TOUCHSCREEN_LW86X0
+        tristate "LW86X0 Touchscreen Driver"
+        default y
+        depends on ARCH_WMT
+        ---help---
+          Say Y here if you have an WMT based board with touchscreen
+          attached to it.
+          If unsure, say N.
+          To compile this driver as a module, choose M here: the
+          module will be called lw86x0_ts.
+

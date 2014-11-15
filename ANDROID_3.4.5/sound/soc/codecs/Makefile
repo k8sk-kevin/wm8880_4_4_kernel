@@ -66,6 +66,9 @@ snd-soc-wm8731-objs := wm8731.o
 snd-soc-wm8737-objs := wm8737.o
 snd-soc-wm8741-objs := wm8741.o
 snd-soc-wm8750-objs := wm8750.o
+snd-soc-vt1602-objs := wmt_vt1602.o
+snd-soc-vt1603-objs := vt1603.o
+snd-soc-hwdac-objs := wmt_hwdac.o
 snd-soc-wm8753-objs := wm8753.o
 snd-soc-wm8770-objs := wm8770.o
 snd-soc-wm8776-objs := wm8776.o
@@ -101,6 +104,9 @@ snd-soc-wm-hubs-objs := wm_hubs.o
 # Amp
 snd-soc-max9877-objs := max9877.o
 snd-soc-tpa6130a2-objs := tpa6130a2.o
+
+# echo cancellation
+snd-soc-wmt-fm34-objs := wmt_fm34.o
 
 obj-$(CONFIG_SND_SOC_88PM860X)	+= snd-soc-88pm860x.o
 obj-$(CONFIG_SND_SOC_AC97_CODEC)	+= snd-soc-ac97.o
@@ -170,6 +176,9 @@ obj-$(CONFIG_SND_SOC_WM8731)	+= snd-soc-wm8731.o
 obj-$(CONFIG_SND_SOC_WM8737)	+= snd-soc-wm8737.o
 obj-$(CONFIG_SND_SOC_WM8741)	+= snd-soc-wm8741.o
 obj-$(CONFIG_SND_SOC_WM8750)	+= snd-soc-wm8750.o
+obj-$(CONFIG_SND_SOC_VT1602)	+= snd-soc-vt1602.o
+obj-$(CONFIG_SND_SOC_VT1603)	+= snd-soc-vt1603.o
+obj-$(CONFIG_SND_SOC_HWDAC)		+= snd-soc-hwdac.o
 obj-$(CONFIG_SND_SOC_WM8753)	+= snd-soc-wm8753.o
 obj-$(CONFIG_SND_SOC_WM8770)	+= snd-soc-wm8770.o
 obj-$(CONFIG_SND_SOC_WM8776)	+= snd-soc-wm8776.o
@@ -205,3 +214,6 @@ obj-$(CONFIG_SND_SOC_WM_HUBS)	+= snd-soc-wm-hubs.o
 # Amp
 obj-$(CONFIG_SND_SOC_MAX9877)	+= snd-soc-max9877.o
 obj-$(CONFIG_SND_SOC_TPA6130A2)	+= snd-soc-tpa6130a2.o
+
+# echo cancellation
+obj-$(CONFIG_SND_SOC_WMT_FM34)	+= snd-soc-wmt-fm34.o

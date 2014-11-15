@@ -270,6 +270,314 @@ config FB_GRVGA
 	---help---
 	This enables support for the SVGACTRL framebuffer in the GRLIB IP library from Aeroflex Gaisler.
 
+config FB_WMT
+	bool "WonderMedia Framebuffer Support"
+	depends on FB && ARCH_WMT
+		default y
+	---help---
+	  This is a framebuffer device driver for the WMT VPP module.
+	  If you plan to use the VGA/DVI display with your WMT based machine,
+	  say Y here.
+
+choice
+	prompt "Select WonderMedia framebuffer device"
+	depends on FB_WMT
+	default FB_WMT_GE
+
+config FB_WMT_GE
+	bool "GE"
+	---help---
+	  This is WonderMedia GE framebuffer driver.
+
+endchoice
+
+config LCD_WMT
+	bool "Support LCD device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a framebuffer device driver for the WMT LCD module.
+	  If you plan to use the LCD with your WMT based machine,
+	  say Y here.
+
+menu "Select LCD panel"
+	depends on LCD_WMT
+
+config LCD_CHILIN_LW0700AT9003
+	bool "CHILIN 7 inch TFT LCD panel (LW0700AT9003)"
+	depends on LCD_WMT
+	default y
+	---help---
+	  Say Y here if you intend to support CHILIN 7 inch TFT LCD panel.
+
+	  Model NO : LW0700AT9003
+	  Number of dots : 800 X 480 RGB 18BIT
+	  Display colors : 262144
+
+config LCD_INNOLUX_AT070TN83
+	bool "INNOLUX 7 inch TFT LCD panel (AT070TN83)"
+	depends on LCD_WMT
+	default y
+	---help---
+	  Say Y here if you intend to support INNOLUX 7 inch TFT LCD panel.
+
+	  Model NO : AT070TN83
+	  Number of dots : 800 X 480 RGB 18BIT
+
+config LCD_AUO_A080SN01
+	bool "AUO 7 inch TFT LCD panel (A080SN01)"
+	depends on LCD_WMT
+	default y
+	---help---
+	  Say Y here if you intend to support AUO 7 inch TFT LCD panel.
+
+	  Model NO : A080SN01
+	  Number of dots : 800 X 600 RGB 24BIT
+	  
+config LCD_EKING_EK08009
+	bool "EKING 8 inch TFT LCD panel (EK08009-70135)"
+	depends on LCD_WMT
+	default y
+	---help---
+	  Say Y here if you intend to support EKING 8 inch TFT LCD panel.
+
+	  Model NO : EK08009-70135
+	  Number of dots : 800 X 600 RGB 24BIT
+
+config LCD_HANNSTAR_HSD101PFW2
+	bool "HANNSTAR 10 inch TFT LCD panel (HSD101PFW2)"
+	depends on LCD_WMT
+	default y
+	---help---
+	  Say Y here if you intend to support HANNSTAR 10 inch TFT LCD panel.
+
+	  Model NO : HSD101PFW2
+	  Number of dots : 1024 X 600 RGB 18BIT
+
+endmenu
+
+config TV_VT1625_WMT
+	bool "Support VIA VT1625 TV transmitter device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a framebuffer device driver for the VIA VT1625 TV transmitter.
+	  If you plan to use the VIA VT1625 TV transmitter with your WMT based machine,
+	  say Y here.
+
+config DVI_VT1632_WMT
+	bool "Support VIA VT1632 DVI transmitter device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a framebuffer device driver for the VIA VT1632 DVI transmitter.
+	  If you plan to use the VIA VT1632 DVI transmitter with your WMT based machine,
+	  say Y here.
+
+config HDMI_CAT6610_WMT
+	bool "Support ITE CAT6610 HDMI device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a device driver for ITE CAT6610 HDMI.
+	  If you plan to use the ITE CAT6610 with your WMT based machine,
+	  say Y here.
+
+config HDMI_SIL902X_WMT
+	bool "Support Silicon Sil902x HDMI device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a device driver for Silicon Sil902x HDMI.
+	  If you plan to use the Silcon Sil902x with your WMT based machine,
+	  say Y here.
+
+config HDCP_SIL902X_WMT
+	tristate "Support Silicon Sil902x HDCP"
+	depends on HDMI_SIL902X_WMT
+		default m
+	---help---
+	  This is a device driver for Silicon Sil902x HDCP.
+	  If you plan to use the Silcon Sil902x HDCP with your WMT based machine,
+	  say Y here.
+	  
+config HDMI_AD9389_WMT
+	bool "Support AD9389 HDMI device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a device driver for AD9389 HDMI.
+	  If you plan to use the AD9389 with your WMT based machine,
+	  say Y here.
+
+config EXTTV_ADV7393_WMT
+	bool "Support ADV7393 TV video encoder device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a device driver for ADV7393 TV video encoder.
+	  If you plan to use the ADV7393 TV video encoder with your WMT based machine,
+	  say Y here.
+
+config WMT_VGA
+	bool "Enable internal VGA video encoder device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a function enable/disable internal VGA video encoder.
+	  If you plan to enable internal VGA video encoder,
+	  say Y here.
+
+config WMT_INTTV
+	bool "Enable internal TV video encoder device"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a function enable/disable internal TV video encoder.
+	  If you plan to enable internal TV video encoder,
+	  say Y here.
+
+config WMT_HDMI
+	bool "Enable internal HDMI"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a function enable/disable internal HDMI.
+	  If you plan to enable internal HDMI video encoder,
+	  say Y here.
+
+config WMT_CEC
+	bool "Enable internal HDMI CEC"
+	depends on WMT_HDMI
+		default y
+	---help---
+	  This is a function enable/disable internal HDMI CEC.
+	  If you plan to enable internal HDMI CEC,
+	  say Y here.
+	  
+config WMT_EDID
+	bool "Enable WMT EDID"
+	depends on FB_WMT
+		default y
+	---help---
+	  This is a function enable/disable WMT EDID.
+	  If you plan to enable WMT EDID,
+	  say Y here.
+
+config WMT_EXT_DEV_PLUG_DISABLE
+	bool "Disable external video connect (DVI & HDMI) plug"
+	depends on FB_WMT
+		default n
+	---help---
+	  This is a function disable for external video connector plug detect (DVI & HDMI ext board).
+	  If you plan to disable external video connector plug detect,
+	  say Y here.
+
+config WMT_INT_DEV_PLUG_DISABLE
+	bool "Disable internal video connect (VGA & TV) plug"
+	depends on FB_WMT
+		default n
+	---help---
+	  This is a function disable for internal video connector plug detect (VGA & TV).
+	  If you plan to disable internal video connector plug detect,
+	  say Y here.
+
+config MAX_RESX
+	int	"Max horizontal resolution (64x)"
+	depends on FB_WMT
+	default 1408
+
+config MAX_RESY
+	int	"Max vertical resolution"
+	depends on FB_WMT
+	default 1050
+
+config DEFAULT_RESX
+	int	"Default horizontal resolution"
+	depends on FB_WMT
+	default 1024
+
+config DEFAULT_RESY
+	int	"Default vertical resolution"
+	depends on FB_WMT
+	default 768
+
+config DEFAULT_FPS
+	int	"Default display refresh rate"
+	depends on FB_WMT
+	default 60
+
+config WMT_MB
+	bool "WMT memblock support"
+	depends on ARCH_WMT
+	default y
+	help
+	  This is memory managment driver which manipulates frambuffers 
+	  for wondermedia codec. Say Y here.
+
+choice
+    prompt "Reserve memory source"
+	depends on WMT_MB
+    default WMT_MB_RESERVE_FROM_IO
+
+config WMT_MB_RESERVE_FROM_IO
+	bool "Reserve from IO"
+	help
+	  Reserve memory directly at begining. And register this region
+	  into kernel. Reserve memroy address start from the end of total
+	  memroy.
+
+config WMT_MB_RESERVE_FROM_KERNEL
+	bool "Reserve from KERNEL"
+	help
+	  Allocate memory directly through kernel space.
+
+endchoice
+
+config WMT_MB_DYNAMIC_ALLOCATE_SUPPORT
+	bool "Dynamic memory allocate support"
+	depends on WMT_MB && WMT_MB_RESERVE_FROM_KERNEL
+	default n
+	help
+	  Dynamic allcate memory from kernal when memory is not enough.
+
+config WMT_MB_SIZE
+    int "Size of memroy reserved for memblock (MB)"
+    depends on WMT_MB
+    default "16"
+    help
+      Set the reserved memory size. Memblock driver will reserve
+      the required memory size for video such as frame buffers, video
+      decode buffer, video display buffer, etc. This could prevent
+      video decoder from lacking continue memroy for decoding. The
+      reserved size will be Mbyte unit.
+
+config FB_WMT_VID
+	bool "WonderMedia VID Support"
+	depends on FB && ARCH_WMT
+        default y
+	---help---
+	  This is WM8510 VID driver.
+	  say Y here.
+choice
+	prompt "Select VID external device"
+	depends on (FB_WMT_VID)
+	default VIDDEV_AD7180
+
+config VIDDEV_AD7180
+	bool "ADV7180 selected"
+	help
+        If you have a ADV7180 tv decoder on board,
+	    say Y here.
+
+config VIDDEV_CUSTOMER
+	bool "CUSTOMER selected"
+	help
+        If you have a customer tv decoder on board,
+	    say Y here.
+
+endchoice
+
 config FB_CIRRUS
 	tristate "Cirrus Logic support"
 	depends on FB && (ZORRO || PCI)

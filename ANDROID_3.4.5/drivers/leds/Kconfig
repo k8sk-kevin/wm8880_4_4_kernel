@@ -23,6 +23,12 @@ config LEDS_CLASS
 	  need this to do anything useful with LEDs.  If unsure, say N.
 
 comment "LED drivers"
+config WMT_LCD_BACKLIGHT
+	tristate "LCD Backlight Support using WMT PWM outputs"
+	depends on LEDS_CLASS && PWM_WMT
+	help
+	  This option enables support for LCD backlight driven using
+	  outputs of the dedicated PWM controller found on WMT SOCs.
 
 config LEDS_88PM860X
 	tristate "LED Support for Marvell 88PM860x PMIC"
@@ -401,6 +407,14 @@ config LEDS_OT200
 	  This option enables support for the LEDs on the Bachmann OT200.
 	  Say Y to enable LEDs on the Bachmann OT200.
 
+config LEDS_LOGO
+	tristate "LED support for Lighting Logo"
+	depends on LEDS_CLASS && ARCH_WMT
+	default y
+	help
+	  This option enables support for the LEDs of logo on the WMT Platform.
+	  The LEDs lights the logo
+	  
 config LEDS_TRIGGERS
 	bool "LED Trigger support"
 	depends on LEDS_CLASS

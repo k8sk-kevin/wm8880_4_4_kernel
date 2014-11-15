@@ -101,6 +101,8 @@ extern int __get_user_1(void *);
 extern int __get_user_2(void *);
 extern int __get_user_4(void *);
 
+// YJChen, 20131230, patch start for CTS android.security#testVroot
+#if 0
 #define __get_user_x(__r2,__p,__e,__s,__i...)				\
 	   __asm__ __volatile__ (					\
 		__asmeq("%0", "r0") __asmeq("%1", "r2")			\
@@ -130,11 +132,89 @@ extern int __get_user_4(void *);
 		__e;							\
 	})
 
+#else
+
+#define __GUP_CLOBBER_1	"lr", "cc"
+#ifdef CONFIG_CPU_USE_DOMAINS
+#define __GUP_CLOBBER_2	"ip", "lr", "cc"
+#else
+#define __GUP_CLOBBER_2 "lr", "cc"
+#endif
+#define __GUP_CLOBBER_4	"lr", "cc"
+
+#define __get_user_x(__r2,__p,__e,__l,__s)          \
+        __asm__ __volatile__ (                      \
+            __asmeq("%0", "r0") __asmeq("%1", "r2") \
+            __asmeq("%3", "r1")                     \
+            "bl	__get_user_" #__s                   \
+            : "=&r" (__e), "=r" (__r2)              \
+            : "0" (__p), "r" (__l)                  \
+            : __GUP_CLOBBER_##__s)
+
+#if 0
+#define get_user(x,p)                                               \
+({                                                                  \
+    unsigned long __limit = current_thread_info()->addr_limit - 1;  \
+    register const typeof(*(p)) __user *__p asm("r0") = (p);        \
+    register unsigned long __r2 asm("r2");                          \
+    register unsigned long __l asm("r1") = __limit;                 \
+    register int __e asm("r0");                                     \
+    switch (sizeof(*(__p))) {                                       \
+        case 1:                                                     \
+            __get_user_x(__r2, __p, __e, __l, 1);                   \
+            break;                                                  \
+        case 2:                                                     \
+            __get_user_x(__r2, __p, __e, __l, 2);                   \
+            break;                                                  \
+        case 4:                                                     \
+            __get_user_x(__r2, __p, __e, __l, 4);                   \
+            break;                                                  \
+        default: __e = __get_user_bad(); break;                     \
+    }                                                               \
+    x = (typeof(*(p))) __r2;                                        \
+    __e;                                                            \
+})
+#else
+#define __get_user_check(x,p)							\
+	({								\
+		unsigned long __limit = current_thread_info()->addr_limit - 1; \
+		register const typeof(*(p)) __user *__p asm("r0") = (p);\
+		register unsigned long __r2 asm("r2");			\
+		register unsigned long __l asm("r1") = __limit;		\
+		register int __e asm("r0");				\
+		switch (sizeof(*(__p))) {				\
+		case 1:							\
+			__get_user_x(__r2, __p, __e, __l, 1);		\
+			break;						\
+		case 2:							\
+			__get_user_x(__r2, __p, __e, __l, 2);		\
+			break;						\
+		case 4:							\
+			__get_user_x(__r2, __p, __e, __l, 4);		\
+			break;						\
+		default: __e = __get_user_bad(); break;			\
+		}							\
+		x = (typeof(*(p))) __r2;				\
+		__e;							\
+	})
+
+#define get_user(x,p)							\
+	({								\
+		might_fault();						\
+		__get_user_check(x,p);					\
+	 })
+#endif
+
+#endif
+// YJChen, 20131230, patch end for CTS android.security#testVroot
+
 extern int __put_user_1(void *, unsigned int);
 extern int __put_user_2(void *, unsigned int);
 extern int __put_user_4(void *, unsigned int);
 extern int __put_user_8(void *, unsigned long long);
 
+// YJChen, 20131230, patch start for CTS android.security#testVroot
+#if 0
 #define __put_user_x(__r2,__p,__e,__s)					\
 	   __asm__ __volatile__ (					\
 		__asmeq("%0", "r0") __asmeq("%2", "r2")			\
@@ -166,6 +246,112 @@ extern int __put_user_8(void *, unsigned long long);
 		__e;							\
 	})
 
+#else
+
+#define __put_user_x(__r2,__p,__e,__l,__s)          \
+        __asm__ __volatile__ (                      \
+            __asmeq("%0", "r0") __asmeq("%2", "r2") \
+            __asmeq("%3", "r1")                     \
+            "bl	__put_user_" #__s                   \
+            : "=&r" (__e)                           \
+            : "0" (__p), "r" (__r2), "r" (__l)      \
+            : "ip", "lr", "cc")
+
+#if 0
+  #if 1
+#define put_user(x,p)                                               \
+({                                                                  \
+    unsigned long __limit = current_thread_info()->addr_limit - 1;  \
+    register const typeof(*(p)) __r2 asm("r2") = (x);               \
+    register const typeof(*(p)) __user *__p asm("r0") = (p);        \
+    register unsigned long __l asm("r1") = __limit;                 \
+    register int __e asm("r0");                                     \
+    switch (sizeof(*(__p))) {                                       \
+        case 1:                                                     \
+            __put_user_x(__r2, __p, __e, __l, 1);                   \
+            break;                                                  \
+        case 2:                                                     \
+            __put_user_x(__r2, __p, __e, __l, 2);                   \
+            break;                                                  \
+        case 4:                                                     \
+            __put_user_x(__r2, __p, __e, __l, 4);                   \
+            break;                                                  \
+        case 8:                                                     \
+            __put_user_x(__r2, __p, __e, __l, 8);                   \
+            break;                                                  \
+        default: __e = __put_user_bad(); break;                     \
+    }                                                               \
+    __e;                                                            \
+})
+  #else
+#define put_user(x,p)                                               \
+({                                                                  \
+    unsigned long __limit = current_thread_info()->addr_limit - 1;  \
+    register const typeof(*(p)) __r2 asm("r2") = (x);               \
+    register const typeof(*(p)) __user *__p asm("r0") = (p);        \
+    register unsigned long __l asm("r1") = __limit;                 \
+    register int __e asm("r0");                                     \
+    switch (sizeof(*(__p))) {                                       \
+        case 1:                                                     \
+            if ((unsigned long)p+1 > __limit)                                      \
+                dump_stack();                                       \
+            __put_user_x(__r2, __p, __e, __l, 1);                   \
+            break;                                                  \
+        case 2:                                                     \
+            if ((unsigned long)p+2 > __limit)                                      \
+                dump_stack();                                       \
+            __put_user_x(__r2, __p, __e, __l, 2);                   \
+            break;                                                  \
+        case 4:                                                     \
+            if ((unsigned long)p+4 > __limit)                                      \
+                dump_stack();                                       \
+            __put_user_x(__r2, __p, __e, __l, 4);                   \
+            break;                                                  \
+        case 8:                                                     \
+            if ((unsigned long)p+8 > __limit)                                      \
+                dump_stack();                                       \
+            __put_user_x(__r2, __p, __e, __l, 8);                   \
+            break;                                                  \
+        default: __e = __put_user_bad(); break;                     \
+    }                                                               \
+    __e;                                                            \
+})
+  #endif
+#else
+#define __put_user_check(x,p)							\
+	({								\
+		unsigned long __limit = current_thread_info()->addr_limit - 1; \
+		register const typeof(*(p)) __r2 asm("r2") = (x);	\
+		register const typeof(*(p)) __user *__p asm("r0") = (p);\
+		register unsigned long __l asm("r1") = __limit;		\
+		register int __e asm("r0");				\
+		switch (sizeof(*(__p))) {				\
+		case 1:							\
+			__put_user_x(__r2, __p, __e, __l, 1);		\
+			break;						\
+		case 2:							\
+			__put_user_x(__r2, __p, __e, __l, 2);		\
+			break;						\
+		case 4:							\
+			__put_user_x(__r2, __p, __e, __l, 4);		\
+			break;						\
+		case 8:							\
+			__put_user_x(__r2, __p, __e, __l, 8);		\
+			break;						\
+		default: __e = __put_user_bad(); break;			\
+		}							\
+		__e;							\
+	})
+
+#define put_user(x,p)							\
+	({								\
+		might_fault();						\
+		__put_user_check(x,p);					\
+	 })
+#endif
+
+#endif
+// YJChen, 20131230, patch end for CTS android.security#testVroot
 #else /* CONFIG_MMU */
 
 /*

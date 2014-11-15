@@ -146,6 +146,27 @@ struct otp_info {
 	__u32 locked;
 };
 
+struct env_info_user {
+    char varname[200];
+    char *varpoint;
+    char varval[512];
+    int varlen;
+};
+
+enum {
+	SIGNED_IMAGE_TYPE_WLOAD,
+	SIGNED_IMAGE_TYPE_UBOOT,
+	SIGNED_IMAGE_TYPE_UBOOT_ENV,
+};
+
+struct write_signed_image {
+    int    type;
+    char * img_data;
+    int    img_len;
+    char * sig_data;
+    int    sig_len;
+    int    flags;       /* == 0 now */
+};
 /*
  * Note, the following ioctl existed in the past and was removed:
  * #define MEMSETOOBSEL           _IOW('M', 9, struct nand_oobinfo)
@@ -202,6 +223,9 @@ struct otp_info {
  * without OOB, e.g., NOR flash.
  */
 #define MEMWRITE		_IOWR('M', 24, struct mtd_write_req)
+#define MEMGETENV		_IOR('M', 128, struct env_info_user)
+#define MEMSETENV		_IOR('M', 129, struct env_info_user)
+#define MEM_WRITE_SIGNED_IMAGE _IOR('M', 130, struct write_signed_image)
 
 /*
  * Obsolete legacy interface. Keep it in order not to break userspace

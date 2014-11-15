@@ -110,4 +110,7 @@
 
 #define EHWPOISON	133	/* Memory page has hardware error */
 
+
+#define NEED_REPLACEMENT 180 /* nand flash data block need replacement */
+
 #endif
