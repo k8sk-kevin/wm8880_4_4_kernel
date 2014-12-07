@@ -118,6 +118,58 @@ static struct cir_param rmtctl_params[] = {
 };
 
 static struct cir_vendor_info rmtctl_vendors[] = {
+	//Add by Flourise Kevin for FuRuiYing IR keypad 2014.11.29 Start
+    {
+		.vendor_name = "Ly-01",
+		.codec = CIR_CODEC_NEC,
+		.vendor_code = 0x00FF,
+		.wakeup_code = 0x18,
+		.key_codes = {
+			[0x18] = KEY_POWER,			/* power down */
+			[0xF2] = KEY_SWITCHVIDEOMODE, /*Cycle between available vide outputs (Monitor/LCD/TV-out/etc) */      
+
+			[0x54] = KEY_1,
+			[0x48] = KEY_2,
+			[0x07] = KEY_3,
+			[0x50] = KEY_4,
+			[0x12] = KEY_5,
+			[0x11] = KEY_6,
+			[0x4c] = KEY_7,
+			[0x0e] = KEY_8,
+			[0x0d] = KEY_9,
+//			[0x41] = KEY_SW_INPUT_TYPE, /*switch input type*/ 
+			[0x0c] = KEY_0,
+			[0x4b] = KEY_BACKSPACE,     /* backspace */
+
+			[0x06] = KEY_HOME,			/* Home */
+			[0x40] = KEY_BACK,			/* back */
+
+			[0x46] = KEY_UP,			/* up */
+
+			[0x47] = KEY_LEFT,			/*left*/
+			[0x55] = KEY_ENTER,		     /* OK */
+			[0x15] = KEY_RIGHT,			/*Right*/						
+	
+			[0x16] = KEY_DOWN,			/*Down*/
+
+			[0x04] = KEY_MENU,			 /* menu */
+            [0x17] = KEY_KATAKANA,		 /* cursor */  
+			
+			
+
+			[0x14] = KEY_VOLUMEDOWN,	 /*volume down*/
+			[0x08] = KEY_MUTE,			  /* mute */
+            [0x10] = KEY_VOLUMEUP,		 /*volume Up*/
+			
+			
+//			[0x56] = KEY_TV,			 /*start TV*/
+//			[0x57] = KEY_QQ,			 /*start QQ*/
+			[0x1f] = KEY_PREVIOUSSONG,   /*previous song*/
+			[0x5b] = KEY_NEXTSONG,		/*next song*/
+		},
+	},	
+	//Add by Flourise Kevin for FuRuiYing IR keypad 2014.11.29 End
+	
 	// SRC1804 0
 	{
 		.vendor_name = "SRC1804",
