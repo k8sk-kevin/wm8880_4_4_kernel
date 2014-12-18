@@ -794,4 +794,17 @@
 #define USB_VENDOR_ID_PRIMAX	0x0461
 #define USB_DEVICE_ID_PRIMAX_KEYBOARD	0x4e05
 
+//Add by ZeroChip Kevin for FuRuiYing Add fitouch USB touch screen 2014.12.07 Start 
+#define USB_VENDOR_ID_FITOUCH           0x10c4
+#define USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_SG    0x5e50
+#define USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_MT    0x5e51
+#define USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_Z_MT  0x5e52
+//Add by ZeroChip Kevin for FuRuiYing Add fitouch USB touch screen 2014.12.07 End
+
+//Add by ZeroChip Kevin for FuRuiYing Add FRY01 USB touch screen 2014.12.07 Start 
+#define USB_VENDOR_ID_FRY           0x1818
+#define USB_DEVICE_ID_FRY_TOUCHSCREEN_01    0x0015
+//Add by ZeroChip Kevin for FuRuiYing Add FRY01 USB touch screen 2014.12.07 End
+
+
 #endif

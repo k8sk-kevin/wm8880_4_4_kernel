@@ -1595,6 +1595,17 @@ static const struct hid_device_id hid_have_special_driver[] = {
 
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_PRESENTER_8K_BT) },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_NINTENDO, USB_DEVICE_ID_NINTENDO_WIIMOTE) },
+	//Add by ZeroChip Kevin for FuRuiYing Add fitouch USB touch screen 2014.12.07 Start
+	//Fitouch
+	{HID_USB_DEVICE(USB_VENDOR_ID_FITOUCH, USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_SG) },
+	{HID_USB_DEVICE(USB_VENDOR_ID_FITOUCH, USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_MT) },
+	{HID_USB_DEVICE(USB_VENDOR_ID_FITOUCH, USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_Z_MT) },
+	//Add by ZeroChip Kevin for FuRuiYing Add fitouch USB touch screen 2014.12.07 End
+	
+	//Add by ZeroChip Kevin for FuRuiYing Add FRY01 USB touch screen 2014.12.07 Start
+	//FRY01
+	{HID_USB_DEVICE(USB_VENDOR_ID_FRY, USB_DEVICE_ID_FRY_TOUCHSCREEN_01) },
+	//Add by ZeroChip Kevin for FuRuiYing Add FRY01 USB touch screen 2014.12.07 End
 	{ }
 };
 

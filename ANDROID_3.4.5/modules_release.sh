@@ -40,21 +40,21 @@ fi
 ## make special WiFi driver
 #make -C drivers/net/wireless/sci_wifi_921x KERNEL_DIR=${PWD}
 
-echo "Do sth for $android_version"
+#echo "Do sth for $android_version"
 #make -C ${WIFI_PATH}/DPA_MT7601U_ANDROID_JB_SDK42_20130329 LINUX_SRC=${PWD} clean
-make -C ${WIFI_PATH}/DPA_MT7601U_ANDROID_JB_3.0.0.6_20130830 LINUX_SRC=${PWD} -j4
-if [ $? -ne 0 ] ; then
-   echo "  *E* Failed to compile DPA_MT7601U for android4.2 on kernel3.4.5, exit!!"
-   exit 1
-fi
-echo "build 7601 wifi drivers on android4.2 is ok!!!"
+#make -C ${WIFI_PATH}/DPA_MT7601U_ANDROID_JB_3.0.0.6_20130830 LINUX_SRC=${PWD} -j4
+#if [ $? -ne 0 ] ; then
+#   echo "  *E* Failed to compile DPA_MT7601U for android4.2 on kernel3.4.5, exit!!"
+#   exit 1
+#fi
+#echo "build 7601 wifi drivers on android4.2 is ok!!!"
 
 #make -C ${WIFI_PATH}/DPO_GPL_MT7601UAP_JB_SDK42_20130329 LINUX_SRC=${PWD} clean
-make -C ${WIFI_PATH}/DPO_MT7601U_ANDROID_AP_3.0.0.6_20130830 LINUX_SRC=${PWD} -j4
-if [ $? -ne 0 ] ; then
-  echo "  *E* Failed to compile DPO_GPL_MT7601UAP_JB_SDK42_20130329 for android4.2 on kernel3.4.5, exit!!"
-  exit 1
-fi
+#make -C ${WIFI_PATH}/DPO_MT7601U_ANDROID_AP_3.0.0.6_20130830 LINUX_SRC=${PWD} -j4
+#if [ $? -ne 0 ] ; then
+#  echo "  *E* Failed to compile DPO_GPL_MT7601UAP_JB_SDK42_20130329 for android4.2 on kernel3.4.5, exit!!"
+#  exit 1
+#fi
 
 find  . -name "*.ko"  | xargs -i cp  {} ${MODULES_CMN}
 mv ${MODULES_CMN}/s_wmt_batt*.ko ${MODULES_OPT}/

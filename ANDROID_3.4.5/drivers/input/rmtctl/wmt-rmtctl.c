@@ -118,6 +118,68 @@ static struct cir_param rmtctl_params[] = {
 };
 
 static struct cir_vendor_info rmtctl_vendors[] = {
+
+//Add by Flourise Kevin for FuRuiYing IR keypad 2014.12.07 Start
+    {
+		.vendor_name = "FRY-01",
+		.codec = CIR_CODEC_NEC,
+		.vendor_code = 0x00FF,
+		.wakeup_code = 0x0F,
+		.key_codes = {
+			//No.1 Line
+			[0x0F] = KEY_POWER,				/* power down */
+			[0x52] = KEY_HOME,				/* Home */
+			[0x10] = KEY_MENU,				/* menu */
+			[0x58] = KEY_MUTE,				/* mute */
+
+			//No.2 Line
+			[0x5E] = KEY_KATAKANA,		 /* cursor */ 
+			[0x4D] = KEY_UP,			 /* up */
+			[0x11] = KEY_PREVIOUSSONG,   /*previous song*/
+			[0x5C] = KEY_VOLUMEUP,		 /*volume Up*/		
+            
+            //No.3 Line	
+			[0x57] = KEY_LEFT,			/*left*/
+			[0x5B] = KEY_ENTER,		    /* OK */
+			[0x5F] = KEY_RIGHT,			/*Right*/	
+			[0x54] = KEY_VOLUMEDOWN,	/*volume down*/
+
+			//No.4 Line
+			[0x56] = KEY_TAB,			/*table key*/
+			[0x5A] = KEY_DOWN,			/*Down*/
+			[0x12] = KEY_NEXTSONG,		/*next song*/
+			[0x53] = KEY_BACK,			/* back */	
+			
+			//No.5 Line
+			[0x17] = KEY_1,
+			[0x1B] = KEY_2,
+			[0x1F] = KEY_3,
+			[0x16] = KEY_4,		
+
+			//No.6 Line
+			[0x1A] = KEY_5,
+			[0x1E] = KEY_6,
+			[0x15] = KEY_7,
+			[0x19] = KEY_8,						
+
+			//No.7 Line
+			[0x1D] = KEY_9,
+			[0x18] = KEY_0,
+			[0x14] = KEY_DOT, 			/*dot //small point*/ 
+			[0x1c] = KEY_BACKSPACE,     /* backspace */
+
+			//No.8 Line
+			[0x13] = KEY_PAUSE, /*vod */      
+			[0x50] = KEY_PLAY, /*live */      
+			[0x59] = KEY_PAUSE, /*pause */      			
+			[0x55] = KEY_PLAY, /*play */      
+
+
+		},
+	},	
+	//Add by Flourise Kevin for FuRuiYing IR keypad 2014.12.07 End
+	
+
 	//Add by Flourise Kevin for FuRuiYing IR keypad 2014.11.29 Start
     {
 		.vendor_name = "Ly-01",
@@ -169,6 +231,8 @@ static struct cir_vendor_info rmtctl_vendors[] = {
 		},
 	},	
 	//Add by Flourise Kevin for FuRuiYing IR keypad 2014.11.29 End
+	
+	
 	
 	// SRC1804 0
 	{

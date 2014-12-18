@@ -1043,6 +1043,25 @@ static const struct hid_device_id mt_devices[] = {
 		HID_USB_DEVICE(USB_VENDOR_ID_XIROKU,
 			USB_DEVICE_ID_XIROKU_CSR2) },
 
+//Add by ZeroChip Kevin for FuRuiYing Add fitouch USB touch screen 2014.12.07 Start
+//Fitouch
+	{ .driver_data = MT_CLS_DEFAULT,
+		HID_USB_DEVICE(USB_VENDOR_ID_FITOUCH,
+			USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_SG) },
+	{ .driver_data = MT_CLS_DEFAULT,
+		HID_USB_DEVICE(USB_VENDOR_ID_FITOUCH,
+			USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_MT) },
+	{ .driver_data = MT_CLS_DEFAULT,
+		HID_USB_DEVICE(USB_VENDOR_ID_FITOUCH,
+		    USB_DEVICE_ID_FITOUCH_TOUCHSCREEN_Z_MT) },
+//Add by ZeroChip Kevin for FuRuiYing Add fitouch USB touch screen 2014.12.07 End
+//Add by ZeroChip Kevin for FuRuiYing Add FRY01 USB touch screen 2014.12.07 Start
+//FRY01
+	{ .driver_data = MT_CLS_DEFAULT,
+		HID_USB_DEVICE(USB_VENDOR_ID_FRY,
+			USB_DEVICE_ID_FRY_TOUCHSCREEN_01) },
+//Add by ZeroChip Kevin for FuRuiYing Add FRY01 USB touch screen 2014.12.07 End
+
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, mt_devices);
